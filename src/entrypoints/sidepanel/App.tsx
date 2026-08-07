@@ -564,7 +564,6 @@ Analyze the browser state and determine your next action. Respond with JSON only
           </div>
         ))}
         <div ref={stepsEndRef} />
-      </div>
 
       {/* Input */}
       <div style={{
