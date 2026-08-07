@@ -21,6 +21,7 @@ export interface SerializedBrowserState {
   footer: string
   issues: string
   landmarks: string
+  dialogs: string
 }
 
 // ─── Element State String ───
@@ -254,7 +255,8 @@ function formatIssues(issues: AomIssue[]): string {
 // ─── Main Serialization ───
 export function serializeToBrowserState(
   root: AomElement,
-  issues: AomIssue[]
+  issues: AomIssue[],
+  recentDialogs?: Array<{ type: string; message: string; timestamp: number }>
 ): SerializedBrowserState {
   const url = window.location.href
   const title = document.title
@@ -303,5 +305,14 @@ export function serializeToBrowserState(
   // Issues
   const issuesStr = formatIssues(issues)
 
-  return { url, title, header, content, footer, issues: issuesStr, landmarks: landmarksStr }
+  // Format recent dialogs
+  const dialogsStr = recentDialogs && recentDialogs.length > 0
+    ? recentDialogs.map(d => {
+        const time = new Date(d.timestamp).toLocaleTimeString()
+        const icon = d.type === 'alert' ? '🔔' : d.type === 'confirm' ? '❓' : d.type === 'prompt' ? '💬' : '⚠️'
+        return `${icon} [${time}] ${d.type}: ${d.message}`
+      }).join('\n')
+    : 'No recent dialogs'
+
+  return { url, title, header, content, footer, issues: issuesStr, landmarks: landmarksStr, dialogs: dialogsStr }
 }

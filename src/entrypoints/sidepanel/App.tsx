@@ -393,6 +393,9 @@ ${state.issues || 'None'}
 
 ## Recent Console Output
 ${consoleInfo}
+
+## Recent Dialogs (alert/confirm/prompt)
+${state.dialogs || 'No recent dialogs'}
 </browser_state>
 
 Analyze the browser state and determine your next action. Respond with JSON only.`

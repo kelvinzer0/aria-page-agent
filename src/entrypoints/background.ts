@@ -43,6 +43,8 @@ export default defineBackground(() => {
   // Console log collection from content scripts
   const consoleLogs: any[] = []
   const MAX_LOGS = 500
+  const dialogEvents: any[] = []
+  const MAX_DIALOGS = 50
 
   // Message handler
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -63,6 +65,27 @@ export default defineBackground(() => {
       if (consoleLogs.length > MAX_LOGS) {
         consoleLogs.splice(0, consoleLogs.length - MAX_LOGS)
       }
+      return false
+    }
+
+    // ─── Dialog events from content script ───
+    if (message.type === 'DIALOG_EVENT') {
+      dialogEvents.push(message.entry)
+      if (dialogEvents.length > MAX_DIALOGS) {
+        dialogEvents.splice(0, dialogEvents.length - MAX_DIALOGS)
+      }
+      return false
+    }
+
+    // ─── Get dialog events ───
+    if (message.type === 'DIALOG_GET_EVENTS') {
+      sendResponse(dialogEvents.slice(-(message.limit || 10)))
+      return false
+    }
+
+    if (message.type === 'DIALOG_CLEAR') {
+      dialogEvents = []
+      sendResponse({ success: true })
       return false
     }
 

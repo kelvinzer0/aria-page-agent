@@ -21,6 +21,7 @@ The browser state includes:
   - Relations shown as (labelled-by, described-by, controls, owns)
 - **Accessibility Issues**: Problems detected (missing labels, wrong roles, etc.)
 - **Console Output**: Recent console.log/warn/error from the page
+- **Recent Dialogs**: JavaScript alert(), confirm(), prompt() that were shown. These are auto-dismissed by the agent.
 </browser_state>
 
 <actions>

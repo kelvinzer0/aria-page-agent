@@ -28,7 +28,7 @@ const LOG_PREFIX = '[AriaPageAgent]'
 let currentRoot: ReturnType<typeof traverse> = null
 
 // ─── Build/Refresh AOM ───
-function refreshAom() {
+async function refreshAom() {
   resetTraverse()
   currentRoot = traverse(document.body)
   if (!currentRoot) {
@@ -37,7 +37,14 @@ function refreshAom() {
   }
   buildIndexMap(currentRoot)
   const issues = getAllIssues()
-  return serializeToBrowserState(currentRoot, issues)
+
+  // Get recent dialog events from background
+  const recentDialogs = await chrome.runtime.sendMessage({
+    type: 'DIALOG_GET_EVENTS',
+    limit: 10,
+  }).catch(() => [])
+
+  return serializeToBrowserState(currentRoot, issues, recentDialogs)
 }
 
 export default defineContentScript({
@@ -49,6 +56,24 @@ export default defineContentScript({
 
     // Initial AOM build
     refreshAom()
+
+    // Inject dialog interceptor
+    injectDialogInterceptor()
+
+    // Listen for dialog events from page
+    window.addEventListener('message', (e) => {
+      if (e.data?.channel === 'ARIA_PAGE_AGENT_DIALOG') {
+        chrome.runtime.sendMessage({
+          type: 'DIALOG_EVENT',
+          entry: {
+            type: e.data.type,
+            message: e.data.message,
+            timestamp: e.data.timestamp,
+            response: e.data.response,
+          },
+        })
+      }
+    })
 
     // Message handler
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -148,5 +173,54 @@ export default defineContentScript({
 function ensureIndexMap() {
   if (!currentRoot) {
     refreshAom()
+  }
+}
+
+// Inject dialog interceptor into page context
+async function injectDialogInterceptor() {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: (await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_TAB' }))?.id },
+      world: 'MAIN',
+      func: () => {
+        if ((window as any).__ariaDialogInterceptor) return
+
+        const sendDialog = (dialog: any) => {
+          window.postMessage({
+            channel: 'ARIA_PAGE_AGENT_DIALOG',
+            ...dialog,
+            timestamp: Date.now(),
+          }, '*')
+        }
+
+        // Override alert()
+        window.alert = function(message?: any) {
+          sendDialog({ type: 'alert', message: String(message ?? '') })
+        }
+
+        // Override confirm()
+        window.confirm = function(message?: any) {
+          sendDialog({ type: 'confirm', message: String(message ?? ''), response: true })
+          return true
+        }
+
+        // Override prompt()
+        window.prompt = function(message?: any, defaultText?: string) {
+          const msg = String(message ?? '')
+          sendDialog({ type: 'prompt', message: msg, response: defaultText || '' })
+          return defaultText || ''
+        }
+
+        // Listen for beforeunload
+        window.addEventListener('beforeunload', (e) => {
+          sendDialog({ type: 'beforeunload', message: e.returnValue || 'Page navigating away' })
+        })
+
+        ;(window as any).__ariaDialogInterceptor = true
+        console.log('[AriaPageAgent] Dialog interceptor injected')
+      },
+    })
+  } catch (err) {
+    console.warn('[AriaPageAgent] Failed to inject dialog interceptor:', err)
   }
 }
