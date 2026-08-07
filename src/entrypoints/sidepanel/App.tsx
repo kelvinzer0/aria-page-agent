@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
+import SYSTEM_PROMPT_TEMPLATE from '../../agent/system_prompt.md?raw'
 
 interface StepResult {
   stepNumber: number
@@ -12,10 +13,11 @@ interface StepResult {
 type AgentStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error'
 
 // ─── API Key Config ───
-function ConfigPanel({ onSave }: { onSave: (key: string, endpoint: string, model: string) => void }) {
+function ConfigPanel({ onSave }: { onSave: (key: string, endpoint: string, model: string, language: string) => void }) {
   const [apiKey, setApiKey] = useState(localStorage.getItem('aom_api_key') || '')
   const [endpoint, setEndpoint] = useState(localStorage.getItem('aom_endpoint') || 'https://generativelanguage.googleapis.com/v1beta')
   const [model, setModel] = useState(localStorage.getItem('aom_model') || 'gemini-2.0-flash')
+  const [language, setLanguage] = useState(localStorage.getItem('aom_language') || 'en')
 
   return (
     <div style={{ padding: 16, borderBottom: '1px solid #1e293b' }}>
@@ -39,12 +41,22 @@ function ConfigPanel({ onSave }: { onSave: (key: string, endpoint: string, model
         onChange={e => setModel(e.target.value)}
         style={inputStyle}
       />
+      <select
+        value={language}
+        onChange={e => setLanguage(e.target.value)}
+        style={inputStyle}
+      >
+        <option value="en">English</option>
+        <option value="zh">中文</option>
+        <option value="id">Bahasa Indonesia</option>
+      </select>
       <button
         onClick={() => {
           localStorage.setItem('aom_api_key', apiKey)
           localStorage.setItem('aom_endpoint', endpoint)
           localStorage.setItem('aom_model', model)
-          onSave(apiKey, endpoint, model)
+          localStorage.setItem('aom_language', language)
+          onSave(apiKey, endpoint, model, language)
         }}
         style={buttonStyle}
       >
@@ -64,6 +76,7 @@ export default function App() {
     apiKey: localStorage.getItem('aom_api_key') || '',
     endpoint: localStorage.getItem('aom_endpoint') || 'https://generativelanguage.googleapis.com/v1beta',
     model: localStorage.getItem('aom_model') || 'gemini-2.0-flash',
+    language: localStorage.getItem('aom_language') || 'en',
   })
   const [aomPreview, setAomPreview] = useState('')
   const stepsEndRef = useRef<HTMLDivElement>(null)
@@ -134,11 +147,14 @@ export default function App() {
           `<step_${i + 1}>\nEval: ${h.eval}\nMemory: ${h.memory}\nGoal: ${h.goal}\nAction: ${h.action}\nResult: ${h.result}\n</step_${i + 1}>`
         ).join('\n')
 
-        const prompt = `You are an AI browser agent. You see web pages through ARIA accessibility semantics.
+        const langMap: Record<string, string> = { en: 'English', zh: '中文', id: 'Bahasa Indonesia' }
+        const langName = langMap[localStorage.getItem('aom_language') || 'en'] || 'English'
+        const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace('{{LANGUAGE}}', langName)
 
-USER REQUEST: ${task}
+        const prompt = `${systemPrompt}
 
-${historyStr ? `<history>\n${historyStr}\n</history>` : ''}
+<user_request>USER REQUEST: ${task}</user_request>
+${historyStr ? `\n<history>\n${historyStr}\n</history>` : ''}
 
 <browser_state>
 ## Landmarks
@@ -153,13 +169,7 @@ ${state.footer}
 ${state.issues || 'None'}
 </browser_state>
 
-Respond with JSON:
-{
-  "evaluation": "Did last action succeed?",
-  "memory": "Progress tracking",
-  "next_goal": "Next step",
-  "action": { "type": "click|input_text|select_option|scroll|press_key|toggle_check|done", "params": {...} }
-}`
+Analyze the browser state and determine your next action. Respond with JSON only.`
 
         // Call LLM
         const response = await fetch(
@@ -270,8 +280,8 @@ Respond with JSON:
 
       {/* Config */}
       {configOpen && (
-        <ConfigPanel onSave={(apiKey, endpoint, model) => {
-          setConfig({ apiKey, endpoint, model })
+        <ConfigPanel onSave={(apiKey, endpoint, model, language) => {
+          setConfig({ apiKey, endpoint, model, language })
           setConfigOpen(false)
         }} />
       )}
