@@ -74,7 +74,7 @@ export class AgentController {
     this.config = {
       apiKey: config.apiKey || '',
       apiEndpoint: config.apiEndpoint || 'https://generativelanguage.googleapis.com/v1beta',
-      model: config.model || 'gemini-2.0-flash',
+      model: config.model || 'gemini-2.5-flash',
       maxSteps: config.maxSteps || 50,
       language: config.language || 'en',
       onStatusChange: config.onStatusChange || (() => {}),

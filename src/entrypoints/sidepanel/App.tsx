@@ -16,7 +16,7 @@ type AgentStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error'
 function ConfigPanel({ onSave }: { onSave: (key: string, endpoint: string, model: string, language: string) => void }) {
   const [apiKey, setApiKey] = useState(localStorage.getItem('aom_api_key') || '')
   const [endpoint, setEndpoint] = useState(localStorage.getItem('aom_endpoint') || 'https://generativelanguage.googleapis.com/v1beta')
-  const [model, setModel] = useState(localStorage.getItem('aom_model') || 'gemini-2.0-flash')
+  const [model, setModel] = useState(localStorage.getItem('aom_model') || 'gemini-2.5-flash')
   const [language, setLanguage] = useState(localStorage.getItem('aom_language') || 'en')
 
   return (
