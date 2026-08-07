@@ -83,23 +83,17 @@ export default defineContentScript({
 
       switch (action) {
         case 'get_browser_state': {
-          try {
-            const state = refreshAom()
-            sendResponse(state || { error: 'Failed to build AOM' })
-          } catch (e) {
-            sendResponse({ error: String(e) })
-          }
-          return false
+          refreshAom()
+            .then(state => sendResponse(state || { error: 'Failed to build AOM' }))
+            .catch(e => sendResponse({ error: String(e) }))
+          return true // async response
         }
 
         case 'update_tree': {
-          try {
-            refreshAom()
-            sendResponse({ success: true })
-          } catch (e) {
-            sendResponse({ error: String(e) })
-          }
-          return false
+          refreshAom()
+            .then(() => sendResponse({ success: true }))
+            .catch(e => sendResponse({ error: String(e) }))
+          return true // async response
         }
 
         case 'click_element': {
