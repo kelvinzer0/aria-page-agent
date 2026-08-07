@@ -68,57 +68,64 @@ function injectDialogInterceptor() {
   })
 }
 
-// ─── Inject MAIN world script via script tag ───
-// This is more reliable than chrome.scripting.executeScript for MAIN world
-function injectMainWorldScript() {
-  const script = document.createElement('script')
-  script.textContent = `
-    (function() {
-      if (window.__ariaDialogInterceptor) return;
-      
-      const sendDialog = (dialog) => {
-        window.postMessage({
-          channel: 'ARIA_PAGE_AGENT_DIALOG',
-          ...dialog,
-          timestamp: Date.now(),
-        }, '*');
-      };
-      
-      // Override alert
-      const origAlert = window.alert;
-      window.alert = function(message) {
-        const msg = String(message ?? '');
-        sendDialog({ type: 'alert', message: msg });
-        // Don't call original - auto-dismiss
-      };
-      
-      // Override confirm
-      const origConfirm = window.confirm;
-      window.confirm = function(message) {
-        const msg = String(message ?? '');
-        sendDialog({ type: 'confirm', message: msg, response: true });
-        return true; // Auto-accept
-      };
-      
-      // Override prompt
-      const origPrompt = window.prompt;
-      window.prompt = function(message, defaultText) {
-        const msg = String(message ?? '');
-        sendDialog({ type: 'prompt', message: msg, response: defaultText || '' });
-        return defaultText || '';
-      };
-      
-      // Listen for beforeunload
-      window.addEventListener('beforeunload', function(e) {
-        sendDialog({ type: 'beforeunload', message: e.returnValue || 'Page navigating away' });
-      });
-      
-      window.__ariaDialogInterceptor = true;
-      console.log('[AriaPageAgent] Dialog interceptor injected (MAIN world)');
-    })();
-  `;
-  ;(document.head || document.documentElement).appendChild(script)
-  script.remove() // Clean up DOM, code already executed
+// ─── Inject MAIN world script ───
+// Uses chrome.scripting API which bypasses CSP
+let mainWorldInjected = false
+
+async function injectMainWorldScript() {
+  if (mainWorldInjected) return
+  
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!tab?.id) return
+    
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'MAIN',
+      injectImmediately: true,
+      func: () => {
+        if ((window as any).__ariaDialogInterceptor) return
+        
+        const sendDialog = (dialog: any) => {
+          window.postMessage({
+            channel: 'ARIA_PAGE_AGENT_DIALOG',
+            ...dialog,
+            timestamp: Date.now(),
+          }, '*')
+        }
+        
+        // Override alert
+        window.alert = function(message?: any) {
+          sendDialog({ type: 'alert', message: String(message ?? '') })
+        }
+        
+        // Override confirm
+        window.confirm = function(message?: any) {
+          sendDialog({ type: 'confirm', message: String(message ?? ''), response: true })
+          return true
+        }
+        
+        // Override prompt
+        window.prompt = function(message?: any, defaultText?: string) {
+          const msg = String(message ?? '')
+          sendDialog({ type: 'prompt', message: msg, response: defaultText || '' })
+          return defaultText || ''
+        }
+        
+        // Listen for beforeunload
+        window.addEventListener('beforeunload', (e) => {
+          sendDialog({ type: 'beforeunload', message: e.returnValue || 'Page navigating away' })
+        })
+        
+        ;(window as any).__ariaDialogInterceptor = true
+      },
+    })
+    
+    mainWorldInjected = true
+  } catch (err) {
+    // CSP might still block, but this is the best we can do
+    console.warn(LOG_PREFIX, 'Failed to inject MAIN world script:', err)
+  }
 }
 
 export default defineContentScript({
@@ -130,7 +137,9 @@ export default defineContentScript({
 
     // Inject dialog interceptor IMMEDIATELY (before page code runs)
     injectDialogInterceptor() // postMessage listener
-    injectMainWorldScript()   // Override alert/confirm/prompt in MAIN world
+    
+    // Inject MAIN world override (bypasses CSP via chrome.scripting API)
+    injectMainWorldScript()
 
     // Initial AOM build (wait for DOM)
     if (document.readyState === 'loading') {

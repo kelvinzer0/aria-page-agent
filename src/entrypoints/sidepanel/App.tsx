@@ -30,24 +30,39 @@ const PROVIDER_PRESETS: Record<ApiProvider, { endpoint: string; model: string }>
 }
 
 // ─── Retry helper for 429 ───
-async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 5): Promise<Response> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     const response = await fetch(url, options)
 
     if (response.status === 429) {
-      const retryAfter = response.headers.get('Retry-After')
-      const waitMs = retryAfter
-        ? parseInt(retryAfter) * 1000
-        : Math.min(1000 * Math.pow(2, attempt), 30000)
+      // Try to get retry info from response
+      let retryAfter = response.headers.get('Retry-After')
+      let waitMs = retryAfter ? parseInt(retryAfter) * 1000 : 0
+      
+      if (!waitMs) {
+        // Try to parse from response body
+        try {
+          const body = await response.clone().json()
+          const retryInfo = body?.error?.details?.find((d: any) => d['@type']?.includes('RetryInfo'))
+          if (retryInfo?.retryDelay) {
+            waitMs = parseFloat(retryInfo.retryDelay) * 1000
+          }
+        } catch {}
+      }
+      
+      // Fallback: exponential backoff with longer waits
+      if (!waitMs) {
+        waitMs = Math.min(5000 * Math.pow(2, attempt), 60000) // 5s, 10s, 20s, 40s, 60s
+      }
 
-      console.warn(`Rate limited (429). Waiting ${waitMs}ms before retry ${attempt + 1}/${maxRetries}`)
+      console.warn(`[AriaPageAgent] Rate limited (429). Waiting ${(waitMs/1000).toFixed(0)}s before retry ${attempt + 1}/${maxRetries}`)
       await new Promise(r => setTimeout(r, waitMs))
       continue
     }
 
     return response
   }
-  throw new Error('Max retries exceeded for rate limit')
+  throw new Error('API rate limit exceeded after multiple retries. Wait a few minutes and try again.')
 }
 
 // ─── Call Gemini API ───
