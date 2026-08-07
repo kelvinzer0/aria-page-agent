@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.wxt/
+.output/
+*.zip
+.env
+.env.local
+*.log
