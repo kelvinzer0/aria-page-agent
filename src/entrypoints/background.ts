@@ -4,8 +4,33 @@
  * Handles:
  * - Extension icon click → open side panel
  * - Message routing between side panel and content scripts
- * - Tab management
+ * - Tab management operations
+ * - Debug tools coordination
  */
+
+import {
+  listTabs,
+  getCurrentTab,
+  switchToTab,
+  openNewTab,
+  closeTab,
+  navigateTo,
+  goBack,
+  goForward,
+  reloadTab,
+  duplicateTab,
+} from '../agent/tabs'
+
+import {
+  startConsoleCapture,
+  getConsoleLogs,
+  clearConsoleLogs,
+  executeScript,
+  getPageErrors,
+  getComputedStyles,
+  getAccessibilitySummary,
+  getPerformanceMetrics,
+} from '../agent/debug'
 
 export default defineBackground(() => {
   // Open side panel on icon click
@@ -15,9 +40,13 @@ export default defineBackground(() => {
     }
   })
 
-  // Message routing
+  // Console log collection from content scripts
+  const consoleLogs: any[] = []
+  const MAX_LOGS = 500
+
+  // Message handler
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // Route PAGE_CONTROL messages from side panel to content script
+    // ─── PAGE_CONTROL messages (route to content script) ───
     if (message.type === 'PAGE_CONTROL' && message.targetTabId) {
       chrome.tabs.sendMessage(message.targetTabId, message)
         .then(sendResponse)
@@ -25,38 +54,125 @@ export default defineBackground(() => {
           console.error('[Background] Failed to route message:', error)
           sendResponse({ error: error.message })
         })
-      return true // async
+      return true
     }
 
-    // Get active tab info
+    // ─── Console entry from content script ───
+    if (message.type === 'CONSOLE_ENTRY') {
+      consoleLogs.push(message.entry)
+      if (consoleLogs.length > MAX_LOGS) {
+        consoleLogs.splice(0, consoleLogs.length - MAX_LOGS)
+      }
+      return false
+    }
+
+    // ─── Tab Management ───
+    if (message.type === 'TAB_LIST') {
+      listTabs().then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'TAB_CURRENT') {
+      getCurrentTab().then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'TAB_SWITCH') {
+      switchToTab(message.tabId).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'TAB_OPEN') {
+      openNewTab(message.url).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'TAB_CLOSE') {
+      closeTab(message.tabId).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'TAB_NAVIGATE') {
+      navigateTo(message.url).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'TAB_BACK') {
+      goBack().then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'TAB_FORWARD') {
+      goForward().then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'TAB_RELOAD') {
+      reloadTab(message.tabId).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'TAB_DUPLICATE') {
+      duplicateTab(message.tabId).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    // ─── Debug Tools ───
+    if (message.type === 'DEBUG_START_CAPTURE') {
+      startConsoleCapture(message.tabId).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'DEBUG_GET_LOGS') {
+      const logs = getConsoleLogs(message.options)
+      sendResponse(logs)
+      return false
+    }
+
+    if (message.type === 'DEBUG_CLEAR_LOGS') {
+      clearConsoleLogs()
+      sendResponse({ success: true })
+      return false
+    }
+
+    if (message.type === 'DEBUG_EXECUTE_SCRIPT') {
+      executeScript(message.tabId, message.script).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'DEBUG_GET_ERRORS') {
+      getPageErrors(message.tabId).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'DEBUG_GET_STYLES') {
+      getComputedStyles(message.tabId, message.selector).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'DEBUG_ACCESSIBILITY') {
+      getAccessibilitySummary(message.tabId).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'DEBUG_PERFORMANCE') {
+      getPerformanceMetrics(message.tabId).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    // ─── Legacy support ───
     if (message.type === 'GET_ACTIVE_TAB') {
-      chrome.tabs.query({ active: true, currentWindow: true })
-        .then(([tab]) => {
-          sendResponse({ id: tab?.id, url: tab?.url, title: tab?.title })
-        })
-        .catch((error: Error) => {
-          sendResponse({ error: error.message })
-        })
+      getCurrentTab().then(sendResponse).catch(e => sendResponse({ error: e.message }))
       return true
     }
 
-    // List all tabs
     if (message.type === 'LIST_TABS') {
-      chrome.tabs.query({})
-        .then((tabs) => {
-          sendResponse(tabs.map(t => ({ id: t.id, url: t.url, title: t.title, active: t.active })))
-        })
-        .catch((error: Error) => {
-          sendResponse({ error: error.message })
-        })
+      listTabs().then(sendResponse).catch(e => sendResponse({ error: e.message }))
       return true
     }
 
-    // Switch to tab
-    if (message.type === 'SWITCH_TAB' && message.tabId) {
-      chrome.tabs.update(message.tabId, { active: true })
-        .then(() => sendResponse({ success: true }))
-        .catch((error: Error) => sendResponse({ error: error.message }))
+    if (message.type === 'SWITCH_TAB') {
+      switchToTab(message.tabId).then(sendResponse).catch(e => sendResponse({ error: e.message }))
       return true
     }
 

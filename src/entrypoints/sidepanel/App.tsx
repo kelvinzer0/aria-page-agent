@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import SYSTEM_PROMPT_TEMPLATE from '../../agent/system_prompt.md?raw'
+import { TabManager, ConsolePanel } from './Panels'
 
 interface StepResult {
   stepNumber: number
@@ -265,6 +266,7 @@ export default function App() {
   })
   const [aomPreview, setAomPreview] = useState('')
   const [error, setError] = useState('')
+  const [activeView, setActiveView] = useState<'agent' | 'tabs' | 'console'>('agent')
   const stepsEndRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -464,6 +466,37 @@ Analyze the browser state and determine your next action. Respond with JSON only
         </button>
       </div>
 
+      {/* Navigation tabs */}
+      <div style={{
+        display: 'flex',
+        background: '#1e293b',
+        borderBottom: '1px solid #334155',
+      }}>
+        {([
+          { key: 'agent' as const, label: '🤖 Agent', icon: '' },
+          { key: 'tabs' as const, label: '📑 Tabs', icon: '' },
+          { key: 'console' as const, label: '💻 Console', icon: '' },
+        ]).map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveView(tab.key)}
+            style={{
+              flex: 1,
+              padding: '8px 4px',
+              background: activeView === tab.key ? '#0f172a' : 'transparent',
+              border: 'none',
+              borderBottom: activeView === tab.key ? '2px solid #6366f1' : '2px solid transparent',
+              color: activeView === tab.key ? '#e2e8f0' : '#64748b',
+              fontSize: 12,
+              fontWeight: activeView === tab.key ? 600 : 400,
+              cursor: 'pointer',
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       {/* Config */}
       {configOpen && (
         <ConfigPanel onSave={(newConfig) => {
@@ -507,8 +540,8 @@ Analyze the browser state and determine your next action. Respond with JSON only
         </div>
       )}
 
-      {/* Steps */}
-      <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
+      {/* Agent View */}
+      {activeView === 'agent' && <>
         {steps.map((step, i) => (
           <div key={i} style={{
             marginBottom: 12,
@@ -577,6 +610,21 @@ Analyze the browser state and determine your next action. Respond with JSON only
           }}
         />
       </div>
+      </>}
+
+      {/* Tabs View */}
+      {activeView === 'tabs' && (
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          <TabManager />
+        </div>
+      )}
+
+      {/* Console View */}
+      {activeView === 'console' && (
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          <ConsolePanel />
+        </div>
+      )}
     </div>
   )
 }
