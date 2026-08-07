@@ -347,9 +347,23 @@ export default function App() {
         const langName = langMap[config.language] || 'English'
         const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace('{{LANGUAGE}}', langName)
 
+        // Collect additional context
+        const tabList = await chrome.runtime.sendMessage({ type: 'TAB_LIST' }).catch(() => [])
+        const consoleLogs = await chrome.runtime.sendMessage({ type: 'DEBUG_GET_LOGS', options: { limit: 20 } }).catch(() => [])
+
         const historyStr = history.map((h: any, i: number) =>
           `<step_${i + 1}>\nEval: ${h.eval}\nMemory: ${h.memory}\nGoal: ${h.goal}\nAction: ${h.action}\nResult: ${h.result}\n</step_${i + 1}>`
         ).join('\n')
+
+        // Format tabs info
+        const tabsInfo = Array.isArray(tabList)
+          ? tabList.map((t: any) => `${t.active ? '→' : ' '} [${t.id}] ${t.title?.substring(0, 50) || t.url?.substring(0, 50)}`).join('\n')
+          : 'Unable to fetch tabs'
+
+        // Format console logs
+        const consoleInfo = Array.isArray(consoleLogs) && consoleLogs.length > 0
+          ? consoleLogs.map((l: any) => `[${l.type}] ${l.args?.join(' ')?.substring(0, 200)}`).join('\n')
+          : 'No console output captured'
 
         const prompt = `${systemPrompt}
 
@@ -357,6 +371,11 @@ export default function App() {
 ${historyStr ? `\n<history>\n${historyStr}\n</history>` : ''}
 
 <browser_state>
+## Open Tabs
+${tabsInfo}
+
+## Current Tab: ${state.title || 'Unknown'}
+
 ## Landmarks
 ${state.landmarks || 'None'}
 
@@ -365,8 +384,11 @@ ${state.header}
 ${state.content}
 ${state.footer}
 
-## Issues
+## Accessibility Issues
 ${state.issues || 'None'}
+
+## Recent Console Output
+${consoleInfo}
 </browser_state>
 
 Analyze the browser state and determine your next action. Respond with JSON only.`
@@ -380,29 +402,78 @@ Analyze the browser state and determine your next action. Respond with JSON only
         const { type, params } = parsed.action
 
         if (type !== 'done') {
-          const actionMap: Record<string, string> = {
-            'click': 'click_element', 'input_text': 'input_text', 'select_option': 'select_option',
-            'scroll': 'scroll', 'press_key': 'press_key', 'toggle_check': 'toggle_check',
-            'hover': 'hover', 'focus': 'focus',
+          // Tab management actions
+          if (type === 'open_tab') {
+            actionResult = await chrome.runtime.sendMessage({ type: 'TAB_OPEN', url: params.url })
+          } else if (type === 'switch_tab') {
+            actionResult = await chrome.runtime.sendMessage({ type: 'TAB_SWITCH', tabId: params.tab_id })
+          } else if (type === 'close_tab') {
+            actionResult = await chrome.runtime.sendMessage({ type: 'TAB_CLOSE', tabId: params.tab_id })
+          } else if (type === 'navigate') {
+            actionResult = await chrome.runtime.sendMessage({ type: 'TAB_NAVIGATE', url: params.url })
+          } else if (type === 'go_back') {
+            actionResult = await chrome.runtime.sendMessage({ type: 'TAB_BACK' })
+          } else if (type === 'go_forward') {
+            actionResult = await chrome.runtime.sendMessage({ type: 'TAB_FORWARD' })
+          } else if (type === 'reload') {
+            actionResult = await chrome.runtime.sendMessage({ type: 'TAB_RELOAD' })
           }
-          const actionName = actionMap[type] || type
-
-          let payload: any[]
-          if (type === 'scroll') payload = [params]
-          else if (type === 'input_text') payload = [params.index, params.text]
-          else if (type === 'select_option') payload = [params.index, params.option_text || params.optionText]
-          else if (type === 'press_key') payload = [params.index, params.key]
-          else if (type === 'toggle_check') payload = [params.index, params.value]
-          else payload = [params.index]
-
-          try {
-            actionResult = await sendToContentScript(tab.id, {
-              type: 'PAGE_CONTROL',
-              action: actionName,
-              payload,
+          // Debug actions
+          else if (type === 'execute_javascript') {
+            actionResult = await chrome.runtime.sendMessage({
+              type: 'DEBUG_EXECUTE_SCRIPT',
+              tabId: tab.id,
+              script: params.script,
             })
-          } catch (e: any) {
-            actionResult = { success: false, message: e.message }
+            if (actionResult?.success) {
+              actionResult = {
+                success: true,
+                message: `✅ JS Result: ${JSON.stringify(actionResult.result)?.substring(0, 500)}`,
+              }
+            }
+          } else if (type === 'get_console_logs') {
+            const logs = await chrome.runtime.sendMessage({
+              type: 'DEBUG_GET_LOGS',
+              options: { limit: params.limit || 20, type: params.filter },
+            })
+            actionResult = {
+              success: true,
+              message: Array.isArray(logs) && logs.length > 0
+                ? logs.map((l: any) => `[${l.type}] ${l.args?.join(' ')?.substring(0, 200)}`).join('\n')
+                : 'No console logs captured',
+            }
+          } else if (type === 'start_console_capture') {
+            actionResult = await chrome.runtime.sendMessage({
+              type: 'DEBUG_START_CAPTURE',
+              tabId: tab.id,
+            })
+          }
+          // Page interaction actions
+          else {
+            const actionMap: Record<string, string> = {
+              'click': 'click_element', 'input_text': 'input_text', 'select_option': 'select_option',
+              'scroll': 'scroll', 'press_key': 'press_key', 'toggle_check': 'toggle_check',
+              'hover': 'hover', 'focus': 'focus',
+            }
+            const actionName = actionMap[type] || type
+
+            let payload: any[]
+            if (type === 'scroll') payload = [params]
+            else if (type === 'input_text') payload = [params.index, params.text]
+            else if (type === 'select_option') payload = [params.index, params.option_text || params.optionText]
+            else if (type === 'press_key') payload = [params.index, params.key]
+            else if (type === 'toggle_check') payload = [params.index, params.value]
+            else payload = [params.index]
+
+            try {
+              actionResult = await sendToContentScript(tab.id, {
+                type: 'PAGE_CONTROL',
+                action: actionName,
+                payload,
+              })
+            } catch (e: any) {
+              actionResult = { success: false, message: e.message }
+            }
           }
         }
 
