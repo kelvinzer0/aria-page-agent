@@ -397,7 +397,7 @@ function detectIssues(element: AomElement): AomIssue[] {
 function buildTableContext(root: AomElement): TableContext | null {
   if (root.role !== 'table' && root.role !== 'grid' && root.htmlTag !== 'table') return null
 
-  const rows: AomElement[][][] = []
+  const rows: AomElement[][] = []
   const cells = new Map<AomElement, TableCell>()
 
   const findRows = (node: AomElement): AomElement[] => {

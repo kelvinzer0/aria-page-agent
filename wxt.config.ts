@@ -2,6 +2,7 @@ import { defineConfig } from 'wxt'
 
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
+  srcDir: 'src',
   manifest: {
     name: 'Aria Page Agent',
     description: 'LLM browser agent that sees the web like a screen reader - powered by ARIA Accessibility Object Model',

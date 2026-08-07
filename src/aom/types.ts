@@ -19,6 +19,7 @@ export type AriaRole =
   | 'tree' | 'treegrid' | 'treeitem'
   | 'columnheader' | 'rowheader' | 'cell' | 'gridcell'
   | 'spinbutton' | 'scrollbar' | 'status' | 'progressbar'
+  | 'slider' | 'searchbox'
   | 'menubar' | 'menu' | 'menuitem' | 'menuitemcheckbox' | 'menuitemradio'
   | 'math' | 'note' | 'definition' | 'directory'
   | 'group' | 'generic' | 'log' | 'marquee' | 'meter'
@@ -160,7 +161,7 @@ export interface TableCell {
 }
 
 export interface TableContext {
-  rows: AomElement[][][]
+  rows: AomElement[][]
   cells: Map<AomElement, TableCell>
   rowCount: number
   colCount: number
