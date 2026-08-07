@@ -12,17 +12,30 @@ interface StepResult {
 
 type AgentStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error'
 
+// ─── API Provider types ───
+type ApiProvider = 'gemini' | 'openai'
+
+const PROVIDER_PRESETS: Record<ApiProvider, { endpoint: string; model: string }> = {
+  gemini: {
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta',
+    model: 'gemini-2.5-flash',
+  },
+  openai: {
+    endpoint: 'https://router9.warunglakku.com/v1',
+    model: 'zeroai',
+  },
+}
+
 // ─── Retry helper for 429 ───
 async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const response = await fetch(url, options)
 
     if (response.status === 429) {
-      // Rate limited - get Retry-After header or use exponential backoff
       const retryAfter = response.headers.get('Retry-After')
       const waitMs = retryAfter
         ? parseInt(retryAfter) * 1000
-        : Math.min(1000 * Math.pow(2, attempt), 30000) // 1s, 2s, 4s, max 30s
+        : Math.min(1000 * Math.pow(2, attempt), 30000)
 
       console.warn(`Rate limited (429). Waiting ${waitMs}ms before retry ${attempt + 1}/${maxRetries}`)
       await new Promise(r => setTimeout(r, waitMs))
@@ -34,13 +47,13 @@ async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3)
   throw new Error('Max retries exceeded for rate limit')
 }
 
-// ─── Call LLM with retry ───
-async function callLLMWithRetry(
+// ─── Call Gemini API ───
+async function callGemini(
   config: { apiKey: string; endpoint: string; model: string },
   prompt: string,
   signal?: AbortSignal
 ): Promise<string> {
-  const url = `${config.endpoint}/models/${config.model}:generateContent?key=${config.apiKey}`
+  const url = `${config.endpoint}/models/${config.model}:generateContent?key=${conf…y}`
 
   const response = await fetchWithRetry(url, {
     method: 'POST',
@@ -58,11 +71,65 @@ async function callLLMWithRetry(
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => '')
-    throw new Error(`API error ${response.status}: ${errorText}`)
+    throw new Error(`Gemini API error ${response.status}: ${errorText}`)
   }
 
   const data = await response.json()
   return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+}
+
+// ─── Call OpenAI-compatible API ───
+async function callOpenAI(
+  config: { apiKey: string; endpoint: string; model: string },
+  prompt: string,
+  signal?: AbortSignal
+): Promise<string> {
+  // Normalize endpoint - remove trailing slash and /chat/completions if present
+  let endpoint = config.endpoint.replace(/\/+$/, '')
+  if (!endpoint.endsWith('/chat/completions')) {
+    endpoint = endpoint + '/chat/completions'
+  }
+
+  const response = await fetchWithRetry(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${conf…y}`,
+    },
+    signal,
+    body: JSON.stringify({
+      model: config.model,
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant that responds in JSON format when asked.' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.1,
+      max_tokens: 2048,
+      response_format: { type: 'json_object' },
+    }),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    throw new Error(`OpenAI API error ${response.status}: ${errorText}`)
+  }
+
+  const data = await response.json()
+  return data.choices?.[0]?.message?.content || ''
+}
+
+// ─── Unified LLM call ───
+async function callLLM(
+  provider: ApiProvider,
+  config: { apiKey: string; endpoint: string; model: string },
+  prompt: string,
+  signal?: AbortSignal
+): Promise<string> {
+  if (provider === 'gemini') {
+    return callGemini(config, prompt, signal)
+  } else {
+    return callOpenAI(config, prompt, signal)
+  }
 }
 
 // ─── Send message to content script with injection check ───
@@ -70,33 +137,65 @@ async function sendToContentScript(tabId: number, message: any): Promise<any> {
   try {
     return await chrome.tabs.sendMessage(tabId, message)
   } catch (err) {
-    // Content script not loaded - try injecting it
     console.warn('Content script not responding, attempting injection...')
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
         files: ['content-scripts/content.js'],
       })
-      // Wait a bit for script to initialize
       await new Promise(r => setTimeout(r, 500))
-      // Retry the message
       return await chrome.tabs.sendMessage(tabId, message)
     } catch (injectErr) {
-      throw new Error(`Cannot connect to page content script. Make sure you're on a regular webpage (not chrome:// or extension page). Error: ${injectErr}`)
+      throw new Error(`Cannot connect to page. Make sure you're on a regular webpage (not chrome:// or extension page). Error: ${injectErr}`)
     }
   }
 }
 
 // ─── Config Panel ───
-function ConfigPanel({ onSave }: { onSave: (key: string, endpoint: string, model: string, language: string) => void }) {
+function ConfigPanel({ onSave }: { onSave: (config: AppConfig) => void }) {
+  const [provider, setProvider] = useState<ApiProvider>(
+    (localStorage.getItem('aom_provider') as ApiProvider) || 'openai'
+  )
   const [apiKey, setApiKey] = useState(localStorage.getItem('aom_api_key') || '')
-  const [endpoint, setEndpoint] = useState(localStorage.getItem('aom_endpoint') || 'https://generativelanguage.googleapis.com/v1beta')
-  const [model, setModel] = useState(localStorage.getItem('aom_model') || 'gemini-2.5-flash')
-  const [language, setLanguage] = useState(localStorage.getItem('aom_language') || 'en')
+  const [endpoint, setEndpoint] = useState(localStorage.getItem('aom_endpoint') || PROVIDER_PRESETS.openai.endpoint)
+  const [model, setModel] = useState(localStorage.getItem('aom_model') || PROVIDER_PRESETS.openai.model)
+  const [language, setLanguage] = useState(localStorage.getItem('aom_language') || 'id')
+
+  const handleProviderChange = (newProvider: ApiProvider) => {
+    setProvider(newProvider)
+    const preset = PROVIDER_PRESETS[newProvider]
+    setEndpoint(preset.endpoint)
+    setModel(preset.model)
+  }
 
   return (
     <div style={{ padding: 16, borderBottom: '1px solid #1e293b' }}>
       <h3 style={{ fontSize: 13, color: '#94a3b8', marginBottom: 8 }}>⚙️ Configuration</h3>
+
+      {/* Provider selector */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <button
+          onClick={() => handleProviderChange('openai')}
+          style={{
+            ...providerBtnStyle,
+            background: provider === 'openai' ? '#6366f1' : '#1e293b',
+            border: provider === 'openai' ? '1px solid #818cf8' : '1px solid #334155',
+          }}
+        >
+          🤖 OpenAI-compatible
+        </button>
+        <button
+          onClick={() => handleProviderChange('gemini')}
+          style={{
+            ...providerBtnStyle,
+            background: provider === 'gemini' ? '#6366f1' : '#1e293b',
+            border: provider === 'gemini' ? '1px solid #818cf8' : '1px solid #334155',
+          }}
+        >
+          ✨ Gemini
+        </button>
+      </div>
+
       <input
         type="password"
         placeholder="API Key"
@@ -127,11 +226,12 @@ function ConfigPanel({ onSave }: { onSave: (key: string, endpoint: string, model
       </select>
       <button
         onClick={() => {
+          localStorage.setItem('aom_provider', provider)
           localStorage.setItem('aom_api_key', apiKey)
           localStorage.setItem('aom_endpoint', endpoint)
           localStorage.setItem('aom_model', model)
           localStorage.setItem('aom_language', language)
-          onSave(apiKey, endpoint, model, language)
+          onSave({ provider, apiKey, endpoint, model, language })
         }}
         style={buttonStyle}
       >
@@ -141,17 +241,27 @@ function ConfigPanel({ onSave }: { onSave: (key: string, endpoint: string, model
   )
 }
 
+// ─── Types ───
+interface AppConfig {
+  provider: ApiProvider
+  apiKey: string
+  endpoint: string
+  model: string
+  language: string
+}
+
 // ─── Main App ───
 export default function App() {
   const [task, setTask] = useState('')
   const [status, setStatus] = useState<AgentStatus>('idle')
   const [steps, setSteps] = useState<StepResult[]>([])
   const [configOpen, setConfigOpen] = useState(false)
-  const [config, setConfig] = useState({
+  const [config, setConfig] = useState<AppConfig>({
+    provider: (localStorage.getItem('aom_provider') as ApiProvider) || 'openai',
     apiKey: localStorage.getItem('aom_api_key') || '',
-    endpoint: localStorage.getItem('aom_endpoint') || 'https://generativelanguage.googleapis.com/v1beta',
-    model: localStorage.getItem('aom_model') || 'gemini-2.5-flash',
-    language: localStorage.getItem('aom_language') || 'en',
+    endpoint: localStorage.getItem('aom_endpoint') || PROVIDER_PRESETS.openai.endpoint,
+    model: localStorage.getItem('aom_model') || PROVIDER_PRESETS.openai.model,
+    language: localStorage.getItem('aom_language') || 'id',
   })
   const [aomPreview, setAomPreview] = useState('')
   const [error, setError] = useState('')
@@ -166,10 +276,7 @@ export default function App() {
   const previewAom = useCallback(async () => {
     setError('')
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    if (!tab?.id) {
-      setError('No active tab found')
-      return
-    }
+    if (!tab?.id) { setError('No active tab found'); return }
 
     try {
       const state = await sendToContentScript(tab.id, {
@@ -203,11 +310,7 @@ export default function App() {
     abortRef.current = new AbortController()
 
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    if (!tab?.id) {
-      setError('No active tab found')
-      setStatus('error')
-      return
-    }
+    if (!tab?.id) { setError('No active tab found'); setStatus('error'); return }
 
     const history: any[] = []
     let stepCount = 0
@@ -266,8 +369,8 @@ ${state.issues || 'None'}
 
 Analyze the browser state and determine your next action. Respond with JSON only.`
 
-        // Call LLM with retry
-        const llmText = await callLLMWithRetry(config, prompt, abortRef.current?.signal)
+        // Call LLM
+        const llmText = await callLLM(config.provider, config, prompt, abortRef.current?.signal)
         const parsed = JSON.parse(llmText)
 
         // Execute action
@@ -276,31 +379,19 @@ Analyze the browser state and determine your next action. Respond with JSON only
 
         if (type !== 'done') {
           const actionMap: Record<string, string> = {
-            'click': 'click_element',
-            'input_text': 'input_text',
-            'select_option': 'select_option',
-            'scroll': 'scroll',
-            'press_key': 'press_key',
-            'toggle_check': 'toggle_check',
-            'hover': 'hover',
-            'focus': 'focus',
+            'click': 'click_element', 'input_text': 'input_text', 'select_option': 'select_option',
+            'scroll': 'scroll', 'press_key': 'press_key', 'toggle_check': 'toggle_check',
+            'hover': 'hover', 'focus': 'focus',
           }
           const actionName = actionMap[type] || type
 
           let payload: any[]
-          if (type === 'scroll') {
-            payload = [params]
-          } else if (type === 'input_text') {
-            payload = [params.index, params.text]
-          } else if (type === 'select_option') {
-            payload = [params.index, params.option_text || params.optionText]
-          } else if (type === 'press_key') {
-            payload = [params.index, params.key]
-          } else if (type === 'toggle_check') {
-            payload = [params.index, params.value]
-          } else {
-            payload = [params.index]
-          }
+          if (type === 'scroll') payload = [params]
+          else if (type === 'input_text') payload = [params.index, params.text]
+          else if (type === 'select_option') payload = [params.index, params.option_text || params.optionText]
+          else if (type === 'press_key') payload = [params.index, params.key]
+          else if (type === 'toggle_check') payload = [params.index, params.value]
+          else payload = [params.index]
 
           try {
             actionResult = await sendToContentScript(tab.id, {
@@ -333,23 +424,19 @@ Analyze the browser state and determine your next action. Respond with JSON only
           result: actionResult.message,
         })
 
-        if (type === 'done') {
-          setStatus('completed')
-          return
-        }
+        if (type === 'done') { setStatus('completed'); return }
 
-        // Wait for page to settle
         await new Promise(r => setTimeout(r, 800))
       }
 
       setStatus('completed')
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
         setStatus('idle')
       } else {
         setStatus('error')
-        setError(error.message)
-        console.error('Agent error:', error)
+        setError(err.message)
+        console.error('Agent error:', err)
       }
     }
   }, [task, config])
@@ -379,8 +466,8 @@ Analyze the browser state and determine your next action. Respond with JSON only
 
       {/* Config */}
       {configOpen && (
-        <ConfigPanel onSave={(apiKey, endpoint, model, language) => {
-          setConfig({ apiKey, endpoint, model, language })
+        <ConfigPanel onSave={(newConfig) => {
+          setConfig(newConfig)
           setConfigOpen(false)
         }} />
       )}
@@ -481,11 +568,7 @@ Analyze the browser state and determine your next action. Respond with JSON only
           value={task}
           onChange={e => setTask(e.target.value)}
           placeholder="Describe what you want to do on this page..."
-          style={{
-            ...inputStyle,
-            minHeight: 60,
-            resize: 'vertical',
-          }}
+          style={{ ...inputStyle, minHeight: 60, resize: 'vertical' }}
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
@@ -519,5 +602,14 @@ const buttonStyle: React.CSSProperties = {
   color: '#fff',
   fontSize: 13,
   fontWeight: 600,
+  cursor: 'pointer',
+}
+
+const providerBtnStyle: React.CSSProperties = {
+  flex: 1,
+  padding: '6px 10px',
+  borderRadius: 6,
+  color: '#e2e8f0',
+  fontSize: 12,
   cursor: 'pointer',
 }
