@@ -5,6 +5,7 @@
  * - Building AOM from the page DOM
  * - Receiving action commands from the agent
  * - Executing actions on the DOM
+ * - Dialog interception
  * - Communicating with background script via messaging
  */
 
@@ -47,33 +48,96 @@ async function refreshAom() {
   return serializeToBrowserState(currentRoot, issues, recentDialogs)
 }
 
+// ─── Dialog Interceptor ───
+// Injected EARLY (document_start) to catch dialogs before page code runs
+function injectDialogInterceptor() {
+  // Already injected by the MAIN world script injection below
+  // This is a backup: listen for postMessage from page context
+  window.addEventListener('message', (e) => {
+    if (e.data?.channel === 'ARIA_PAGE_AGENT_DIALOG') {
+      chrome.runtime.sendMessage({
+        type: 'DIALOG_EVENT',
+        entry: {
+          type: e.data.type,
+          message: e.data.message,
+          timestamp: e.data.timestamp,
+          response: e.data.response,
+        },
+      }).catch(() => {})
+    }
+  })
+}
+
+// ─── Inject MAIN world script via script tag ───
+// This is more reliable than chrome.scripting.executeScript for MAIN world
+function injectMainWorldScript() {
+  const script = document.createElement('script')
+  script.textContent = `
+    (function() {
+      if (window.__ariaDialogInterceptor) return;
+      
+      const sendDialog = (dialog) => {
+        window.postMessage({
+          channel: 'ARIA_PAGE_AGENT_DIALOG',
+          ...dialog,
+          timestamp: Date.now(),
+        }, '*');
+      };
+      
+      // Override alert
+      const origAlert = window.alert;
+      window.alert = function(message) {
+        const msg = String(message ?? '');
+        sendDialog({ type: 'alert', message: msg });
+        // Don't call original - auto-dismiss
+      };
+      
+      // Override confirm
+      const origConfirm = window.confirm;
+      window.confirm = function(message) {
+        const msg = String(message ?? '');
+        sendDialog({ type: 'confirm', message: msg, response: true });
+        return true; // Auto-accept
+      };
+      
+      // Override prompt
+      const origPrompt = window.prompt;
+      window.prompt = function(message, defaultText) {
+        const msg = String(message ?? '');
+        sendDialog({ type: 'prompt', message: msg, response: defaultText || '' });
+        return defaultText || '';
+      };
+      
+      // Listen for beforeunload
+      window.addEventListener('beforeunload', function(e) {
+        sendDialog({ type: 'beforeunload', message: e.returnValue || 'Page navigating away' });
+      });
+      
+      window.__ariaDialogInterceptor = true;
+      console.log('[AriaPageAgent] Dialog interceptor injected (MAIN world)');
+    })();
+  `;
+  ;(document.head || document.documentElement).appendChild(script)
+  script.remove() // Clean up DOM, code already executed
+}
+
 export default defineContentScript({
   matches: ['<all_urls>'],
-  runAt: 'document_end',
+  runAt: 'document_start', // ← EARLY injection to catch dialogs
 
   main(_ctx) {
     console.log(LOG_PREFIX, 'Content script loaded on', window.location.href)
 
-    // Initial AOM build
-    refreshAom()
+    // Inject dialog interceptor IMMEDIATELY (before page code runs)
+    injectDialogInterceptor() // postMessage listener
+    injectMainWorldScript()   // Override alert/confirm/prompt in MAIN world
 
-    // Inject dialog interceptor
-    injectDialogInterceptor()
-
-    // Listen for dialog events from page
-    window.addEventListener('message', (e) => {
-      if (e.data?.channel === 'ARIA_PAGE_AGENT_DIALOG') {
-        chrome.runtime.sendMessage({
-          type: 'DIALOG_EVENT',
-          entry: {
-            type: e.data.type,
-            message: e.data.message,
-            timestamp: e.data.timestamp,
-            response: e.data.response,
-          },
-        })
-      }
-    })
+    // Initial AOM build (wait for DOM)
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => refreshAom())
+    } else {
+      refreshAom()
+    }
 
     // Message handler
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -167,54 +231,5 @@ export default defineContentScript({
 function ensureIndexMap() {
   if (!currentRoot) {
     refreshAom()
-  }
-}
-
-// Inject dialog interceptor into page context
-async function injectDialogInterceptor() {
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId: (await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_TAB' }))?.id },
-      world: 'MAIN',
-      func: () => {
-        if ((window as any).__ariaDialogInterceptor) return
-
-        const sendDialog = (dialog: any) => {
-          window.postMessage({
-            channel: 'ARIA_PAGE_AGENT_DIALOG',
-            ...dialog,
-            timestamp: Date.now(),
-          }, '*')
-        }
-
-        // Override alert()
-        window.alert = function(message?: any) {
-          sendDialog({ type: 'alert', message: String(message ?? '') })
-        }
-
-        // Override confirm()
-        window.confirm = function(message?: any) {
-          sendDialog({ type: 'confirm', message: String(message ?? ''), response: true })
-          return true
-        }
-
-        // Override prompt()
-        window.prompt = function(message?: any, defaultText?: string) {
-          const msg = String(message ?? '')
-          sendDialog({ type: 'prompt', message: msg, response: defaultText || '' })
-          return defaultText || ''
-        }
-
-        // Listen for beforeunload
-        window.addEventListener('beforeunload', (e) => {
-          sendDialog({ type: 'beforeunload', message: e.returnValue || 'Page navigating away' })
-        })
-
-        ;(window as any).__ariaDialogInterceptor = true
-        console.log('[AriaPageAgent] Dialog interceptor injected')
-      },
-    })
-  } catch (err) {
-    console.warn('[AriaPageAgent] Failed to inject dialog interceptor:', err)
   }
 }
