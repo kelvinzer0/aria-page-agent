@@ -427,16 +427,18 @@ Analyze the browser state and determine your next action. Respond with JSON only
           }
           // Debug actions
           else if (type === 'execute_javascript') {
-            actionResult = await chrome.runtime.sendMessage({
+            const jsResult = await chrome.runtime.sendMessage({
               type: 'DEBUG_EXECUTE_SCRIPT',
               tabId: tab.id,
               script: params.script,
             })
-            if (actionResult?.success) {
+            if (jsResult?.success) {
               actionResult = {
                 success: true,
-                message: `✅ JS Result: ${JSON.stringify(actionResult.result)?.substring(0, 500)}`,
+                message: `✅ JS Result: ${JSON.stringify(jsResult.result)?.substring(0, 500)}`,
               }
+            } else {
+              actionResult = { success: false, message: jsResult?.error || 'JS execution failed' }
             }
           } else if (type === 'get_console_logs') {
             const logs = await chrome.runtime.sendMessage({

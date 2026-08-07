@@ -43,7 +43,7 @@ export default defineBackground(() => {
   // Console log collection from content scripts
   const consoleLogs: any[] = []
   const MAX_LOGS = 500
-  const dialogEvents: any[] = []
+  let dialogEvents: any[] = []
   const MAX_DIALOGS = 50
 
   // Message handler

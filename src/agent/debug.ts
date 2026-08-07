@@ -276,7 +276,8 @@ export async function getAccessibilitySummary(
       },
     })
 
-    return results?.[0]?.result || { success: false, error: 'No result' }
+    const r = results?.[0]?.result
+    return typeof r === 'string' ? { success: true, summary: r } : (r || { success: false, error: 'No result' })
   } catch (err: any) {
     return { success: false, error: err.message }
   }

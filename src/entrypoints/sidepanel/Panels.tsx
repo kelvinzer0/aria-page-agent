@@ -129,7 +129,8 @@ export function TabManager({ onTabSelect }: { onTabSelect?: (tabId: number) => v
               <div style={{ display: 'flex', gap: 2, flexShrink: 0, marginLeft: 4 }}>
                 <button
                   onClick={e => { e.stopPropagation(); handleDuplicate(tab.id) }}
-                  style={{ ...tinyBtn, title: 'Duplicate' }}
+                  title="Duplicate"
+                  style={tinyBtn}
                 >📋</button>
                 <button
                   onClick={e => { e.stopPropagation(); handleClose(tab.id) }}
