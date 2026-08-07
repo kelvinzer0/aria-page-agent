@@ -30,20 +30,27 @@ jobs:
       - name: Build extension
         run: npm run build
 
-      - name: List build output
+      - name: Package extension
         run: |
-          echo "=== Build output ==="
-          find .output -type f 2>/dev/null || echo "No .output directory"
-          echo "=== Root files ==="
-          ls -la *.zip 2>/dev/null || echo "No zip files"
+          cd .output/chrome-mv3
+          zip -r ../../aria-page-agent.zip .
+          cd ../..
+          echo "=== Zip contents ==="
+          unzip -l aria-page-agent.zip
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: aria-page-agent-extension
-          path: |
-            .output/
-            !.output/**/node_modules
+          path: .output/chrome-mv3/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: aria-page-agent-zip
+          path: aria-page-agent.zip
           if-no-files-found: warn
           retention-days: 30
 
@@ -68,20 +75,17 @@ jobs:
       - name: Build extension
         run: npm run build
 
-      - name: Create zip
+      - name: Package extension
         run: |
-          if command -v wxt &> /dev/null; then
-            npx wxt zip || true
-          fi
-          if [ ! -f *.zip ]; then
-            cd .output/chrome-mv3 && zip -r ../../aria-page-agent.zip . && cd ../..
-          fi
-          ls -la *.zip
+          cd .output/chrome-mv3
+          zip -r ../../aria-page-agent.zip .
 
-      - name: Upload zip artifact
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: aria-page-agent-zip
-          path: "*.zip"
-          if-no-files-found: warn
-          retention-days: 30
+          files: aria-page-agent.zip
+          tag_name: v${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
