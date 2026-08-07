@@ -44,7 +44,7 @@ export default defineContentScript({
   matches: ['<all_urls>'],
   runAt: 'document_end',
 
-  main(ctx) {
+  main(_ctx) {
     console.log(LOG_PREFIX, 'Content script loaded on', window.location.href)
 
     // Initial AOM build

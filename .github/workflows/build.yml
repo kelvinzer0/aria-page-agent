@@ -31,13 +31,20 @@ jobs:
         run: npm run build
 
       - name: List build output
-        run: ls -laR .output/ 2>/dev/null || echo "No .output directory"
+        run: |
+          echo "=== Build output ==="
+          find .output -type f 2>/dev/null || echo "No .output directory"
+          echo "=== Root files ==="
+          ls -la *.zip 2>/dev/null || echo "No zip files"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: aria-page-agent-extension
-          path: .output/
+          path: |
+            .output/
+            !.output/**/node_modules
+          if-no-files-found: warn
           retention-days: 30
 
   release:
@@ -62,11 +69,19 @@ jobs:
         run: npm run build
 
       - name: Create zip
-        run: npm run zip 2>/dev/null || (cd .output && zip -r ../aria-page-agent.zip .)
+        run: |
+          if command -v wxt &> /dev/null; then
+            npx wxt zip || true
+          fi
+          if [ ! -f *.zip ]; then
+            cd .output/chrome-mv3 && zip -r ../../aria-page-agent.zip . && cd ../..
+          fi
+          ls -la *.zip
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: aria-page-agent-zip
-          path: aria-page-agent.zip
+          path: "*.zip"
+          if-no-files-found: warn
           retention-days: 30
