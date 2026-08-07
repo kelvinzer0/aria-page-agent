@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import SYSTEM_PROMPT_TEMPLATE from '../../agent/system_prompt.md?raw'
 import { TabManager, ConsolePanel } from './Panels'
+import { extractJson } from '../../executor'
 
 interface StepResult {
   stepNumber: number
@@ -24,8 +25,8 @@ const PROVIDER_PRESETS: Record<ApiProvider, { endpoint: string; model: string }>
     model: 'gemini-2.5-flash',
   },
   openai: {
-    endpoint: 'https://router9.warunglakku.com/v1',
-    model: 'zeroai',
+    endpoint: 'https://openrouter.ai/api/v1',
+    model: 'poolside/laguna-s-2.1:free',
   },
 }
 
@@ -118,12 +119,11 @@ async function callOpenAI(
     body: JSON.stringify({
       model: config.model,
       messages: [
-        { role: 'system', content: 'You are a helpful assistant that responds in JSON format when asked.' },
+        { role: 'system', content: 'You are a helpful assistant. You MUST respond with valid JSON only. No markdown, no explanation, just raw JSON.' },
         { role: 'user', content: prompt },
       ],
       temperature: 0.1,
       max_tokens: 2048,
-      response_format: { type: 'json_object' },
     }),
   })
 
@@ -133,8 +133,12 @@ async function callOpenAI(
   }
 
   const data = await response.json()
-  return data.choices?.[0]?.message?.content || ''
+  const content = data.choices?.[0]?.message?.content || ''
+  return extractJson(content)
 }
+
+// ─── Extract JSON from LLM response ───
+
 
 // ─── Unified LLM call ───
 async function callLLM(

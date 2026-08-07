@@ -14,6 +14,7 @@ import { serializeToBrowserState } from '../aom/serializer'
 import SYSTEM_PROMPT_TEMPLATE from './system_prompt.md?raw'
 import {
   buildIndexMap,
+  extractJson,
   clickElement,
   inputText,
   selectOption,

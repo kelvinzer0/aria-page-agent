@@ -308,3 +308,33 @@ export async function toggleCheck(index: number, value?: boolean): Promise<Actio
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
+
+// ─── Extract JSON from LLM response ───
+export function extractJson(text: string): string {
+  // Already valid JSON
+  try {
+    JSON.parse(text)
+    return text
+  } catch {}
+
+  // Try markdown code blocks
+  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+  if (codeBlockMatch) {
+    try {
+      JSON.parse(codeBlockMatch[1].trim())
+      return codeBlockMatch[1].trim()
+    } catch {}
+  }
+
+  // Try to find JSON object in text
+  const jsonMatch = text.match(/\{[\s\S]*\}/)
+  if (jsonMatch) {
+    try {
+      JSON.parse(jsonMatch[0])
+      return jsonMatch[0]
+    } catch {}
+  }
+
+  // Return as-is
+  return text
+}
