@@ -12,7 +12,82 @@ interface StepResult {
 
 type AgentStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error'
 
-// ─── API Key Config ───
+// ─── Retry helper for 429 ───
+async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const response = await fetch(url, options)
+
+    if (response.status === 429) {
+      // Rate limited - get Retry-After header or use exponential backoff
+      const retryAfter = response.headers.get('Retry-After')
+      const waitMs = retryAfter
+        ? parseInt(retryAfter) * 1000
+        : Math.min(1000 * Math.pow(2, attempt), 30000) // 1s, 2s, 4s, max 30s
+
+      console.warn(`Rate limited (429). Waiting ${waitMs}ms before retry ${attempt + 1}/${maxRetries}`)
+      await new Promise(r => setTimeout(r, waitMs))
+      continue
+    }
+
+    return response
+  }
+  throw new Error('Max retries exceeded for rate limit')
+}
+
+// ─── Call LLM with retry ───
+async function callLLMWithRetry(
+  config: { apiKey: string; endpoint: string; model: string },
+  prompt: string,
+  signal?: AbortSignal
+): Promise<string> {
+  const url = `${config.endpoint}/models/${config.model}:generateContent?key=${config.apiKey}`
+
+  const response = await fetchWithRetry(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 2048,
+        responseMimeType: 'application/json',
+      },
+    }),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    throw new Error(`API error ${response.status}: ${errorText}`)
+  }
+
+  const data = await response.json()
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+}
+
+// ─── Send message to content script with injection check ───
+async function sendToContentScript(tabId: number, message: any): Promise<any> {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message)
+  } catch (err) {
+    // Content script not loaded - try injecting it
+    console.warn('Content script not responding, attempting injection...')
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['content-scripts/content.js'],
+      })
+      // Wait a bit for script to initialize
+      await new Promise(r => setTimeout(r, 500))
+      // Retry the message
+      return await chrome.tabs.sendMessage(tabId, message)
+    } catch (injectErr) {
+      throw new Error(`Cannot connect to page content script. Make sure you're on a regular webpage (not chrome:// or extension page). Error: ${injectErr}`)
+    }
+  }
+}
+
+// ─── Config Panel ───
 function ConfigPanel({ onSave }: { onSave: (key: string, endpoint: string, model: string, language: string) => void }) {
   const [apiKey, setApiKey] = useState(localStorage.getItem('aom_api_key') || '')
   const [endpoint, setEndpoint] = useState(localStorage.getItem('aom_endpoint') || 'https://generativelanguage.googleapis.com/v1beta')
@@ -75,36 +150,46 @@ export default function App() {
   const [config, setConfig] = useState({
     apiKey: localStorage.getItem('aom_api_key') || '',
     endpoint: localStorage.getItem('aom_endpoint') || 'https://generativelanguage.googleapis.com/v1beta',
-    model: localStorage.getItem('aom_model') || 'gemini-2.0-flash',
+    model: localStorage.getItem('aom_model') || 'gemini-2.5-flash',
     language: localStorage.getItem('aom_language') || 'en',
   })
   const [aomPreview, setAomPreview] = useState('')
+  const [error, setError] = useState('')
   const stepsEndRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
-  // Auto-scroll to latest step
   useEffect(() => {
     stepsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [steps])
 
   // ─── Preview AOM ───
   const previewAom = useCallback(async () => {
+    setError('')
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    if (!tab?.id) return
+    if (!tab?.id) {
+      setError('No active tab found')
+      return
+    }
 
-    const state = await chrome.tabs.sendMessage(tab.id, {
-      type: 'PAGE_CONTROL',
-      action: 'get_browser_state',
-    })
+    try {
+      const state = await sendToContentScript(tab.id, {
+        type: 'PAGE_CONTROL',
+        action: 'get_browser_state',
+      })
 
-    if (state && !state.error) {
-      setAomPreview([
-        state.header,
-        state.content,
-        state.footer,
-        '\n--- Issues ---',
-        state.issues,
-      ].join('\n'))
+      if (state && !state.error) {
+        setAomPreview([
+          state.header,
+          state.content,
+          state.footer,
+          '\n--- Issues ---',
+          state.issues,
+        ].join('\n'))
+      } else {
+        setError(state?.error || 'Failed to get page state')
+      }
+    } catch (e: any) {
+      setError(e.message)
     }
   }, [])
 
@@ -114,10 +199,12 @@ export default function App() {
 
     setStatus('running')
     setSteps([])
+    setError('')
     abortRef.current = new AbortController()
 
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
     if (!tab?.id) {
+      setError('No active tab found')
       setStatus('error')
       return
     }
@@ -132,24 +219,32 @@ export default function App() {
         stepCount++
 
         // Get browser state
-        const state = await chrome.tabs.sendMessage(tab.id, {
-          type: 'PAGE_CONTROL',
-          action: 'get_browser_state',
-        })
+        let state: any
+        try {
+          state = await sendToContentScript(tab.id, {
+            type: 'PAGE_CONTROL',
+            action: 'get_browser_state',
+          })
+        } catch (e: any) {
+          setError(`Cannot connect to page: ${e.message}`)
+          setStatus('error')
+          return
+        }
 
         if (!state || state.error) {
+          setError(state?.error || 'Failed to get page state')
           setStatus('error')
           break
         }
 
         // Build prompt
+        const langMap: Record<string, string> = { en: 'English', zh: '中文', id: 'Bahasa Indonesia' }
+        const langName = langMap[config.language] || 'English'
+        const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace('{{LANGUAGE}}', langName)
+
         const historyStr = history.map((h: any, i: number) =>
           `<step_${i + 1}>\nEval: ${h.eval}\nMemory: ${h.memory}\nGoal: ${h.goal}\nAction: ${h.action}\nResult: ${h.result}\n</step_${i + 1}>`
         ).join('\n')
-
-        const langMap: Record<string, string> = { en: 'English', zh: '中文', id: 'Bahasa Indonesia' }
-        const langName = langMap[localStorage.getItem('aom_language') || 'en'] || 'English'
-        const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace('{{LANGUAGE}}', langName)
 
         const prompt = `${systemPrompt}
 
@@ -171,30 +266,8 @@ ${state.issues || 'None'}
 
 Analyze the browser state and determine your next action. Respond with JSON only.`
 
-        // Call LLM
-        const response = await fetch(
-          `${config.endpoint}/models/${config.model}:generateContent?key=${config.apiKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: abortRef.current?.signal,
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: prompt }] }],
-              generationConfig: {
-                temperature: 0.1,
-                maxOutputTokens: 2048,
-                responseMimeType: 'application/json',
-              },
-            }),
-          }
-        )
-
-        if (!response.ok) {
-          throw new Error(`API error: ${response.status}`)
-        }
-
-        const data = await response.json()
-        const llmText = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+        // Call LLM with retry
+        const llmText = await callLLMWithRetry(config, prompt, abortRef.current?.signal)
         const parsed = JSON.parse(llmText)
 
         // Execute action
@@ -202,19 +275,42 @@ Analyze the browser state and determine your next action. Respond with JSON only
         const { type, params } = parsed.action
 
         if (type !== 'done') {
-          actionResult = await chrome.tabs.sendMessage(tab.id, {
-            type: 'PAGE_CONTROL',
-            action: type === 'click' ? 'click_element'
-              : type === 'input_text' ? 'input_text'
-              : type === 'select_option' ? 'select_option'
-              : type === 'scroll' ? 'scroll'
-              : type === 'press_key' ? 'press_key'
-              : type === 'toggle_check' ? 'toggle_check'
-              : type === 'hover' ? 'hover'
-              : type === 'focus' ? 'focus'
-              : type,
-            payload: type === 'scroll' ? params : [params.index, params.text || params.option_text || params.key || params.value].filter((_, i) => i === 0 || _ !== undefined),
-          })
+          const actionMap: Record<string, string> = {
+            'click': 'click_element',
+            'input_text': 'input_text',
+            'select_option': 'select_option',
+            'scroll': 'scroll',
+            'press_key': 'press_key',
+            'toggle_check': 'toggle_check',
+            'hover': 'hover',
+            'focus': 'focus',
+          }
+          const actionName = actionMap[type] || type
+
+          let payload: any[]
+          if (type === 'scroll') {
+            payload = [params]
+          } else if (type === 'input_text') {
+            payload = [params.index, params.text]
+          } else if (type === 'select_option') {
+            payload = [params.index, params.option_text || params.optionText]
+          } else if (type === 'press_key') {
+            payload = [params.index, params.key]
+          } else if (type === 'toggle_check') {
+            payload = [params.index, params.value]
+          } else {
+            payload = [params.index]
+          }
+
+          try {
+            actionResult = await sendToContentScript(tab.id, {
+              type: 'PAGE_CONTROL',
+              action: actionName,
+              payload,
+            })
+          } catch (e: any) {
+            actionResult = { success: false, message: e.message }
+          }
         }
 
         const step: StepResult = {
@@ -223,7 +319,9 @@ Analyze the browser state and determine your next action. Respond with JSON only
           memory: parsed.memory,
           nextGoal: parsed.next_goal,
           action: `${type}(${JSON.stringify(params || {})})`,
-          actionResult: type === 'done' ? { success: params?.success ?? true, message: params?.message || 'Done' } : actionResult,
+          actionResult: type === 'done'
+            ? { success: params?.success ?? true, message: params?.message || 'Done' }
+            : actionResult,
         }
 
         setSteps(prev => [...prev, step])
@@ -250,6 +348,7 @@ Analyze the browser state and determine your next action. Respond with JSON only
         setStatus('idle')
       } else {
         setStatus('error')
+        setError(error.message)
         console.error('Agent error:', error)
       }
     }
@@ -284,6 +383,23 @@ Analyze the browser state and determine your next action. Respond with JSON only
           setConfig({ apiKey, endpoint, model, language })
           setConfigOpen(false)
         }} />
+      )}
+
+      {/* Error banner */}
+      {error && (
+        <div style={{
+          padding: '8px 16px',
+          background: '#7f1d1d',
+          borderBottom: '1px solid #991b1b',
+          fontSize: 12,
+          color: '#fca5a5',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}>
+          <span>❌ {error}</span>
+          <button onClick={() => setError('')} style={{ background: 'none', border: 'none', color: '#fca5a5', cursor: 'pointer' }}>✕</button>
+        </div>
       )}
 
       {/* AOM Preview */}
