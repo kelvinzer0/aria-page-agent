@@ -68,63 +68,25 @@ function injectDialogInterceptor() {
   })
 }
 
-// ─── Inject MAIN world script ───
-// Uses chrome.scripting API which bypasses CSP
+// ─── Inject MAIN world script via background ───
+// Content scripts can't use chrome.tabs, so delegate to background
 let mainWorldInjected = false
 
 async function injectMainWorldScript() {
   if (mainWorldInjected) return
   
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    if (!tab?.id) return
-    
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      world: 'MAIN',
-      injectImmediately: true,
-      func: () => {
-        if ((window as any).__ariaDialogInterceptor) return
-        
-        const sendDialog = (dialog: any) => {
-          window.postMessage({
-            channel: 'ARIA_PAGE_AGENT_DIALOG',
-            ...dialog,
-            timestamp: Date.now(),
-          }, '*')
-        }
-        
-        // Override alert
-        window.alert = function(message?: any) {
-          sendDialog({ type: 'alert', message: String(message ?? '') })
-        }
-        
-        // Override confirm
-        window.confirm = function(message?: any) {
-          sendDialog({ type: 'confirm', message: String(message ?? ''), response: true })
-          return true
-        }
-        
-        // Override prompt
-        window.prompt = function(message?: any, defaultText?: string) {
-          const msg = String(message ?? '')
-          sendDialog({ type: 'prompt', message: msg, response: defaultText || '' })
-          return defaultText || ''
-        }
-        
-        // Listen for beforeunload
-        window.addEventListener('beforeunload', (e) => {
-          sendDialog({ type: 'beforeunload', message: e.returnValue || 'Page navigating away' })
-        })
-        
-        ;(window as any).__ariaDialogInterceptor = true
-      },
+    const result = await chrome.runtime.sendMessage({
+      type: 'INJECT_DIALOG_INTERCEPTOR',
     })
     
-    mainWorldInjected = true
+    if (result?.success) {
+      mainWorldInjected = true
+    } else {
+      console.warn(LOG_PREFIX, 'Dialog injection failed:', result?.error)
+    }
   } catch (err) {
-    // CSP might still block, but this is the best we can do
-    console.warn(LOG_PREFIX, 'Failed to inject MAIN world script:', err)
+    console.warn(LOG_PREFIX, 'Failed to request dialog injection:', err)
   }
 }
 

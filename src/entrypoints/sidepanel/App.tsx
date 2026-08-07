@@ -275,7 +275,7 @@ export default function App() {
   const [steps, setSteps] = useState<StepResult[]>([])
   const [configOpen, setConfigOpen] = useState(false)
   const [config, setConfig] = useState<AppConfig>({
-    provider: (localStorage.getItem('aom_provider') as ApiProvider) || 'openai',
+    provider: (localStorage.getItem('aom_provider') as ApiProvider) || 'openai', // default ke OpenAI-compatible (zeroai)
     apiKey: localStorage.getItem('aom_api_key') || '',
     endpoint: localStorage.getItem('aom_endpoint') || PROVIDER_PRESETS.openai.endpoint,
     model: localStorage.getItem('aom_model') || PROVIDER_PRESETS.openai.model,

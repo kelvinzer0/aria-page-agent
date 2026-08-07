@@ -77,6 +77,59 @@ export default defineBackground(() => {
       return false
     }
 
+    // ─── Inject dialog interceptor into MAIN world ───
+    if (message.type === 'INJECT_DIALOG_INTERCEPTOR') {
+      const senderTabId = sender.tab?.id
+      if (!senderTabId) {
+        sendResponse({ success: false, error: 'No tab ID' })
+        return false
+      }
+      
+      chrome.scripting.executeScript({
+        target: { tabId: senderTabId },
+        world: 'MAIN',
+        injectImmediately: true,
+        func: () => {
+          if ((window as any).__ariaDialogInterceptor) return
+          
+          const sendDialog = (dialog: any) => {
+            window.postMessage({
+              channel: 'ARIA_PAGE_AGENT_DIALOG',
+              ...dialog,
+              timestamp: Date.now(),
+            }, '*')
+          }
+          
+          window.alert = function(message?: any) {
+            sendDialog({ type: 'alert', message: String(message ?? '') })
+          }
+          
+          window.confirm = function(message?: any) {
+            sendDialog({ type: 'confirm', message: String(message ?? ''), response: true })
+            return true
+          }
+          
+          window.prompt = function(message?: any, defaultText?: string) {
+            const msg = String(message ?? '')
+            sendDialog({ type: 'prompt', message: msg, response: defaultText || '' })
+            return defaultText || ''
+          }
+          
+          window.addEventListener('beforeunload', (e) => {
+            sendDialog({ type: 'beforeunload', message: e.returnValue || 'Page navigating away' })
+          })
+          
+          ;(window as any).__ariaDialogInterceptor = true
+        },
+      }).then(() => {
+        sendResponse({ success: true })
+      }).catch((err: Error) => {
+        sendResponse({ success: false, error: err.message })
+      })
+      
+      return true // async response
+    }
+
     // ─── Get dialog events ───
     if (message.type === 'DIALOG_GET_EVENTS') {
       sendResponse(dialogEvents.slice(-(message.limit || 10)))
