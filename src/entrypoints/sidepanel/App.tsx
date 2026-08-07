@@ -9,6 +9,8 @@ interface StepResult {
   nextGoal: string
   action: string
   actionResult: { success: boolean; message: string }
+  timestamp: number
+  duration: number
 }
 
 type AgentStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error'
@@ -317,11 +319,13 @@ export default function App() {
     const history: any[] = []
     let stepCount = 0
     const maxSteps = 50
+    const totalStartTime = Date.now()
 
     try {
       while (stepCount < maxSteps) {
         if (abortRef.current?.signal.aborted) break
         stepCount++
+        const stepStart = Date.now()
 
         // Get browser state
         let state: any
@@ -486,6 +490,8 @@ Analyze the browser state and determine your next action. Respond with JSON only
           actionResult: type === 'done'
             ? { success: params?.success ?? true, message: params?.message || 'Done' }
             : actionResult,
+          timestamp: stepStart,
+          duration: Date.now() - stepStart,
         }
 
         setSteps(prev => [...prev, step])
@@ -528,6 +534,14 @@ Analyze the browser state and determine your next action. Respond with JSON only
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 20 }}>♿</span>
           <span style={{ fontWeight: 600, fontSize: 14 }}>Aria Page Agent</span>
+          {status === 'running' && (
+            <span style={{ fontSize: 11, color: '#fbbf24' }}>⏱ Running...</span>
+          )}
+          {status === 'completed' && steps.length > 0 && (
+            <span style={{ fontSize: 11, color: '#22c55e' }}>
+              ✅ {steps.length} steps • {((steps[steps.length - 1].timestamp + steps[steps.length - 1].duration - steps[0].timestamp) / 1000).toFixed(1)}s
+            </span>
+          )}
         </div>
         <button
           onClick={() => setConfigOpen(!configOpen)}
@@ -622,7 +636,9 @@ Analyze the browser state and determine your next action. Respond with JSON only
             borderLeft: `3px solid ${step.actionResult.success ? '#22c55e' : '#ef4444'}`,
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-              <span style={{ fontSize: 11, color: '#64748b' }}>Step {step.stepNumber}</span>
+              <span style={{ fontSize: 11, color: '#64748b' }}>
+                Step {step.stepNumber} • {new Date(step.timestamp).toLocaleTimeString()} • {(step.duration / 1000).toFixed(1)}s
+              </span>
               <span style={{ fontSize: 11, color: step.actionResult.success ? '#22c55e' : '#ef4444' }}>
                 {step.actionResult.success ? '✓' : '✗'}
               </span>
