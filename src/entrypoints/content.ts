@@ -9,7 +9,7 @@
  */
 
 import { traverse, resetTraverse, getAllIssues } from '../aom/traverse'
-import { serializeToBrowserState, type SerializedBrowserState } from '../aom/serializer'
+import { serializeToBrowserState } from '../aom/serializer'
 import {
   buildIndexMap,
   clickElement,
@@ -20,7 +20,6 @@ import {
   hoverElement,
   focusElement,
   toggleCheck,
-  type ActionResult,
 } from '../executor'
 
 const LOG_PREFIX = '[AriaPageAgent]'
@@ -29,7 +28,7 @@ const LOG_PREFIX = '[AriaPageAgent]'
 let currentRoot: ReturnType<typeof traverse> = null
 
 // ─── Build/Refresh AOM ───
-function refreshAom(): SerializedBrowserState | null {
+function refreshAom() {
   resetTraverse()
   currentRoot = traverse(document.body)
   if (!currentRoot) {
@@ -41,109 +40,113 @@ function refreshAom(): SerializedBrowserState | null {
   return serializeToBrowserState(currentRoot, issues)
 }
 
-// ─── Message Handler ───
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type !== 'PAGE_CONTROL') return false
+export default defineContentScript({
+  matches: ['<all_urls>'],
+  runAt: 'document_end',
 
-  const { action, payload } = message
+  main(ctx) {
+    console.log(LOG_PREFIX, 'Content script loaded on', window.location.href)
 
-  switch (action) {
-    case 'get_browser_state': {
-      try {
-        const state = refreshAom()
-        sendResponse(state || { error: 'Failed to build AOM' })
-      } catch (e) {
-        sendResponse({ error: String(e) })
+    // Initial AOM build
+    refreshAom()
+
+    // Message handler
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.type !== 'PAGE_CONTROL') return false
+
+      const { action, payload } = message
+
+      switch (action) {
+        case 'get_browser_state': {
+          try {
+            const state = refreshAom()
+            sendResponse(state || { error: 'Failed to build AOM' })
+          } catch (e) {
+            sendResponse({ error: String(e) })
+          }
+          return false
+        }
+
+        case 'update_tree': {
+          try {
+            refreshAom()
+            sendResponse({ success: true })
+          } catch (e) {
+            sendResponse({ error: String(e) })
+          }
+          return false
+        }
+
+        case 'click_element': {
+          const [index] = payload
+          ensureIndexMap()
+          clickElement(index).then(sendResponse)
+          return true
+        }
+
+        case 'input_text': {
+          const [index, text] = payload
+          ensureIndexMap()
+          inputText(index, text).then(sendResponse)
+          return true
+        }
+
+        case 'select_option': {
+          const [index, optionText] = payload
+          ensureIndexMap()
+          selectOption(index, optionText).then(sendResponse)
+          return true
+        }
+
+        case 'scroll': {
+          ensureIndexMap()
+          scroll(payload).then(sendResponse)
+          return true
+        }
+
+        case 'press_key': {
+          const [index, key] = payload
+          ensureIndexMap()
+          pressKey(index, key).then(sendResponse)
+          return true
+        }
+
+        case 'hover': {
+          const [index] = payload
+          ensureIndexMap()
+          hoverElement(index).then(sendResponse)
+          return true
+        }
+
+        case 'focus': {
+          const [index] = payload
+          ensureIndexMap()
+          focusElement(index).then(sendResponse)
+          return true
+        }
+
+        case 'toggle_check': {
+          const [index, value] = payload
+          ensureIndexMap()
+          toggleCheck(index, value).then(sendResponse)
+          return true
+        }
+
+        case 'clean_up_highlights': {
+          sendResponse({ success: true })
+          return false
+        }
+
+        default:
+          sendResponse({ error: `Unknown action: ${action}` })
+          return false
       }
-      return false
-    }
-
-    case 'update_tree': {
-      try {
-        refreshAom()
-        sendResponse({ success: true })
-      } catch (e) {
-        sendResponse({ error: String(e) })
-      }
-      return false
-    }
-
-    case 'click_element': {
-      const [index] = payload
-      ensureIndexMap()
-      clickElement(index).then(sendResponse)
-      return true // async
-    }
-
-    case 'input_text': {
-      const [index, text] = payload
-      ensureIndexMap()
-      inputText(index, text).then(sendResponse)
-      return true
-    }
-
-    case 'select_option': {
-      const [index, optionText] = payload
-      ensureIndexMap()
-      selectOption(index, optionText).then(sendResponse)
-      return true
-    }
-
-    case 'scroll': {
-      ensureIndexMap()
-      scroll(payload).then(sendResponse)
-      return true
-    }
-
-    case 'press_key': {
-      const [index, key] = payload
-      ensureIndexMap()
-      pressKey(index, key).then(sendResponse)
-      return true
-    }
-
-    case 'hover': {
-      const [index] = payload
-      ensureIndexMap()
-      hoverElement(index).then(sendResponse)
-      return true
-    }
-
-    case 'focus': {
-      const [index] = payload
-      ensureIndexMap()
-      focusElement(index).then(sendResponse)
-      return true
-    }
-
-    case 'toggle_check': {
-      const [index, value] = payload
-      ensureIndexMap()
-      toggleCheck(index, value).then(sendResponse)
-      return true
-    }
-
-    case 'clean_up_highlights': {
-      // No-op for now (no highlighting system yet)
-      sendResponse({ success: true })
-      return false
-    }
-
-    default:
-      sendResponse({ error: `Unknown action: ${action}` })
-      return false
-  }
+    })
+  },
 })
 
-// Ensure index map is built before action
 function ensureIndexMap() {
   if (!currentRoot) {
     refreshAom()
   }
 }
-
-// ─── Initialize ───
-console.log(LOG_PREFIX, 'Content script loaded on', window.location.href)
-
-// Initial AOM build
-refreshAom()

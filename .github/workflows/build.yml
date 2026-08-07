@@ -16,16 +16,22 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install dependencies
         run: npm install
 
-      - name: Type check
-        run: npx tsc --noEmit || true
+      - name: Lint (TypeScript check)
+        run: npx tsc --noEmit 2>&1 || true
+
+      - name: Lint (WXT prepare)
+        run: npx wxt prepare 2>&1
 
       - name: Build extension
         run: npm run build
+
+      - name: List build output
+        run: ls -laR .output/ 2>/dev/null || echo "No .output directory"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -47,7 +53,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install dependencies
         run: npm install
