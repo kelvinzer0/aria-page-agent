@@ -53,7 +53,7 @@ async function callGemini(
   prompt: string,
   signal?: AbortSignal
 ): Promise<string> {
-  const url = `${config.endpoint}/models/${config.model}:generateContent?key=${conf…y}`
+  const url = `${config.endpoint}/models/${config.model}:generateContent?key=${config.apiKey}`
 
   const response = await fetchWithRetry(url, {
     method: 'POST',
@@ -94,7 +94,7 @@ async function callOpenAI(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${conf…y}`,
+      'Authorization': `Bearer ${config.apiKey}`,
     },
     signal,
     body: JSON.stringify({
