@@ -152,25 +152,54 @@ export async function executeScript(
   script: string
 ): Promise<{ success: boolean; result?: any; error?: string }> {
   try {
+    // Use MAIN world to access page JS context
+    // Pass code as arg, use script tag injection (bypasses eval CSP)
     const results = await chrome.scripting.executeScript({
       target: { tabId },
+      world: 'MAIN',
+      injectImmediately: true,
       func: (code: string) => {
-        try {
-          // Wrap in async function to support await
-          const asyncFn = new Function(`return (async () => { ${code} })()`)
-          return { success: true, result: asyncFn() }
-        } catch (err: any) {
-          return { success: false, error: err.message }
-        }
+        return new Promise<any>((resolve) => {
+          // Use a unique channel for this eval
+          const channel = '__ariaEval_' + Date.now()
+          
+          // Listen for result
+          const handler = (e: MessageEvent) => {
+            if (e.data?.channel === channel) {
+              window.removeEventListener('message', handler)
+              resolve(e.data)
+            }
+          }
+          window.addEventListener('message', handler)
+          
+          // Timeout after 10s
+          setTimeout(() => {
+            window.removeEventListener('message', handler)
+            resolve({ success: false, error: 'Execution timed out' })
+          }, 10000)
+          
+          // Inject via script element
+          const scriptEl = document.createElement('script')
+          scriptEl.textContent = `
+            (async function() {
+              try {
+                const result = await eval(${JSON.stringify(code)});
+                window.postMessage({ channel: '${channel}', success: true, result: result }, '*');
+              } catch (err) {
+                window.postMessage({ channel: '${channel}', success: false, error: err.message }, '*');
+              }
+            })();
+          `
+          document.documentElement.appendChild(scriptEl)
+          scriptEl.remove()
+        })
       },
       args: [script],
     })
 
     const result = results?.[0]?.result
     if (result?.success) {
-      // Handle promise results
-      const value = result.result instanceof Promise ? await result.result : result.result
-      return { success: true, result: value }
+      return { success: true, result: result.result }
     } else {
       return { success: false, error: result?.error || 'Unknown error' }
     }
