@@ -138,6 +138,9 @@ export async function selectOption(index: number, optionText: string): Promise<A
     domNode.focus()
 
     // Find matching option
+    if (!domNode.options) {
+      return { success: false, message: `❌ Element [${index}] is not a native <select> (it's a <${domNode.tagName.toLowerCase()}>). For custom dropdowns (like Select2), use click() and type_text() instead.` }
+    }
     const options = Array.from(domNode.options)
     const match = options.find(o =>
       o.text.toLowerCase().includes(optionText.toLowerCase()) ||

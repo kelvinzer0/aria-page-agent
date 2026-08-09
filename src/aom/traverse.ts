@@ -481,9 +481,10 @@ export function resetTraverse() {
 }
 
 export function traverse(
-  htmlNode: Node,
+  htmlNode: Node | null | undefined,
   traversedNodes: Map<Node, AomElement> = new Map()
 ): AomElement | null {
+  if (!htmlNode) return null
   if (traversedNodes.has(htmlNode)) {
     return traversedNodes.get(htmlNode)!
   }
