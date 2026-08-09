@@ -70,10 +70,13 @@ async function refreshAom() {
 
 // ─── Dialog + Console Interceptor ───
 // Listens for postMessage from MAIN world (injected by background).
-// Uses safeSend so SW sleep does NOT trigger unchecked lastError.
-// De-duplicated: only forward if NOT already captured by background's auto-inject
-// (background injects MAIN world script that posts messages, content script forwards them)
+// Guard uses DOM attribute (shared across all isolated world instances of same page)
+// to prevent double-registration if content script loads twice.
 function injectDialogInterceptor() {
+  // DOM attribute guard — works even if content script loads twice (WXT quirk)
+  if (document.documentElement.hasAttribute('data-aria-listener')) return
+  document.documentElement.setAttribute('data-aria-listener', '1')
+
   window.addEventListener('message', (e) => {
     // Forward dialog events to background
     if (e.data?.channel === 'ARIA_PAGE_AGENT_DIALOG') {
@@ -89,8 +92,6 @@ function injectDialogInterceptor() {
     }
 
     // Forward console log events to background
-    // Guard: only forward once (background MAIN-world inject already does postMessage,
-    // content script here bridges it to SW — don't double-post)
     if (e.data?.channel === 'ARIA_PAGE_AGENT_CONSOLE') {
       safeSend({
         type: 'CONSOLE_ENTRY',

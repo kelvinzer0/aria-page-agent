@@ -161,8 +161,13 @@ export default defineBackground(() => {
       world: 'MAIN',
       injectImmediately: false,
       func: () => {
-        if ((window as any).__ariaPageAgentReady) return
-        ;(window as any).__ariaPageAgentReady = true
+        // Stable flag — never rename this across extension versions
+        if ((window as any).__ariaPageAgent) return
+        ;(window as any).__ariaPageAgent = true
+        // Clear old flags from previous extension versions
+        delete (window as any).__ariaConsoleCapture
+        delete (window as any).__ariaDialogInterceptor
+        delete (window as any).__ariaPageAgentReady
 
         // ── Console capture (all 5 levels + errors + rejections) ──
         const orig: Record<string, any> = {}
