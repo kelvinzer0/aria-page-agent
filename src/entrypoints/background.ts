@@ -36,6 +36,7 @@ import {
 import { MCPBridgeClient, type BridgeConfig } from '../mcp/bridge'
 import { getToolDefinitions, executeToolViaBackground } from '../mcp/tools'
 import { pushConsoleLog } from '../mcp/consoleStore'
+import { pushNetworkEntry, mapInitiatorType } from '../mcp/networkStore'
 
 // ─── MCP Bridge Instance ───
 let bridge: MCPBridgeClient | null = null
@@ -187,7 +188,88 @@ export default defineBackground(() => {
         window.addEventListener('error', e => window.postMessage({ channel: 'ARIA_PAGE_AGENT_CONSOLE', type: 'error', args: [`${e.message} @ ${e.filename}:${e.lineno}`], timestamp: Date.now(), source: location.href }, '*'))
         window.addEventListener('unhandledrejection', e => window.postMessage({ channel: 'ARIA_PAGE_AGENT_CONSOLE', type: 'error', args: [`Unhandled Promise Rejection: ${String(e.reason)}`], timestamp: Date.now(), source: location.href }, '*'))
 
-        // ── Dialog interceptor ──
+        // ── Network Monitor: fetch + XHR interceptor + PerformanceObserver ──
+        const _origFetch = window.fetch
+        window.fetch = async function(...args: any[]) {
+          const id = Math.random().toString(36).slice(2, 10)
+          const start = Date.now()
+          let reqUrl = ''
+          let reqMethod = 'GET'
+          let reqHeaders: Record<string,string> = {}
+          let reqBody = ''
+          try {
+            const req = args[0] instanceof Request ? args[0] : new Request(args[0] as RequestInfo, args[1] as RequestInit)
+            reqUrl = req.url
+            reqMethod = req.method
+            req.headers.forEach((v:string, k:string) => reqHeaders[k] = v)
+            reqBody = await req.clone().text().catch(() => '') as string
+            if (reqBody.length > 5000) reqBody = reqBody.substring(0, 5000) + '...[truncated]'
+          } catch {}
+          try {
+            const res = await _origFetch.apply(this, args)
+            const resClone = res.clone()
+            const ct = res.headers.get('content-type') || ''
+            const resHeaders: Record<string,string> = {}
+            res.headers.forEach((v:string, k:string) => resHeaders[k] = v)
+            let resBody = ''
+            if (ct.includes('json') || ct.includes('text') || ct.includes('xml')) {
+              resBody = await resClone.text().catch(() => '') as string
+              if (resBody.length > 50000) resBody = resBody.substring(0, 50000) + '\n...[truncated]'
+            }
+            const size = parseInt(res.headers.get('content-length') || '0') || resBody.length
+            window.postMessage({ channel: 'ARIA_NETWORK', id, url: reqUrl || res.url, method: reqMethod, type: 'fetch', status: res.status, statusText: res.statusText, requestHeaders: reqHeaders, responseHeaders: resHeaders, requestBody: reqBody, responseBody: resBody, size, duration: Date.now()-start, startTime: start, endTime: Date.now() }, '*')
+            return res
+          } catch(e: any) {
+            window.postMessage({ channel: 'ARIA_NETWORK', id, url: reqUrl, method: reqMethod, type: 'fetch', error: e.message, duration: Date.now()-start, startTime: start, endTime: Date.now() }, '*')
+            throw e
+          }
+        }
+
+        // XHR interceptor
+        const _origXHR = window.XMLHttpRequest
+        function PatchedXHR(this: any) {
+          const xhr = new _origXHR()
+          const id = Math.random().toString(36).slice(2, 10)
+          const start = Date.now()
+          let method = 'GET'
+          let url = ''
+          const reqHeaders: Record<string,string> = {}
+          let reqBody = ''
+          const origOpen = xhr.open.bind(xhr)
+          xhr.open = function(m: string, u: string, ...rest: any[]) { method = m; url = u; return origOpen(m, u, ...rest) }
+          const origSetHeader = xhr.setRequestHeader.bind(xhr)
+          xhr.setRequestHeader = function(k: string, v: string) { reqHeaders[k] = v; return origSetHeader(k, v) }
+          const origSend = xhr.send.bind(xhr)
+          xhr.send = function(body?: any) {
+            if (body) { try { reqBody = typeof body === 'string' ? body.substring(0, 5000) : JSON.stringify(body).substring(0, 5000) } catch {} }
+            xhr.addEventListener('load', () => {
+              const ct = xhr.getResponseHeader('content-type') || ''
+              let resBody = ''
+              if (ct.includes('json') || ct.includes('text') || ct.includes('xml')) { try { resBody = (xhr.responseText || '').substring(0, 50000) } catch {} }
+              const resHeaders: Record<string,string> = {}
+              try { xhr.getAllResponseHeaders().split('\r\n').forEach((h: string) => { const [k,...v] = h.split(': '); if(k) resHeaders[k.toLowerCase()] = v.join(': ') }) } catch {}
+              window.postMessage({ channel: 'ARIA_NETWORK', id, url, method, type: 'xhr', status: xhr.status, statusText: xhr.statusText, requestHeaders: reqHeaders, responseHeaders: resHeaders, requestBody: reqBody, responseBody: resBody, size: resBody.length || xhr.response?.byteLength || 0, duration: Date.now()-start, startTime: start, endTime: Date.now() }, '*')
+            })
+            xhr.addEventListener('error', () => window.postMessage({ channel: 'ARIA_NETWORK', id, url, method, type: 'xhr', error: 'XHR Error', duration: Date.now()-start, startTime: start, endTime: Date.now() }, '*'))
+            return origSend(body)
+          }
+          return xhr
+        }
+        PatchedXHR.prototype = _origXHR.prototype
+        ;(window as any).XMLHttpRequest = PatchedXHR
+
+        // PerformanceObserver for CSS/JS/img/font/media/document etc.
+        try {
+          const po = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+              const e = entry as PerformanceResourceTiming
+              if (e.initiatorType === 'fetch' || e.initiatorType === 'xmlhttprequest') continue // already captured
+              window.postMessage({ channel: 'ARIA_NETWORK', id: Math.random().toString(36).slice(2,10), url: e.name, method: 'GET', initiatorType: e.initiatorType, size: e.transferSize || e.decodedBodySize, duration: Math.round(e.duration), startTime: Date.now() - Math.round(e.duration), endTime: Date.now() }, '*')
+            }
+          })
+          po.observe({ type: 'resource', buffered: true })
+        } catch {}
+
         const sendDialog = (d: any) => window.postMessage({ channel: 'ARIA_PAGE_AGENT_DIALOG', ...d, timestamp: Date.now() }, '*')
         window.alert = (m?: any) => sendDialog({ type: 'alert', message: String(m ?? '') })
         window.confirm = (m?: any) => { sendDialog({ type: 'confirm', message: String(m ?? ''), response: true }); return true }
@@ -254,6 +336,17 @@ export default defineBackground(() => {
     // ─── Console entry from content script → shared store ───
     if (message.type === 'CONSOLE_ENTRY') {
       pushConsoleLog(message.entry)
+      return false
+    }
+
+    // ─── Network request from content script → network store ───
+    if (message.type === 'NETWORK_REQUEST') {
+      const entry = message.entry
+      // Map initiatorType for performance entries (non-fetch/xhr)
+      if (!entry.type && entry.initiatorType) {
+        entry.type = mapInitiatorType(entry.initiatorType, entry.url || '')
+      }
+      pushNetworkEntry(entry)
       return false
     }
 

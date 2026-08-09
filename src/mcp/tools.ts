@@ -15,6 +15,7 @@ import {
   reloadTab,
 } from '../agent/tabs'
 import { getStoredConsoleLogs } from './consoleStore'
+import { getNetworkEntries, getNetworkEntryById, clearNetworkEntries } from './networkStore'
 
 // ─── Tool Definitions ───
 
@@ -224,6 +225,34 @@ export function getToolDefinitions(): ToolDefinition[] {
       name: 'get_accessibility_summary',
       description: 'Get accessibility audit summary of the page',
       inputSchema: { type: 'object', properties: {} },
+    },
+    {
+      name: 'network_monitor',
+      description: 'Monitor network requests on the current page. Auto-captures fetch, XHR, and all resource types. History persists while bridge is active.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['list', 'detail', 'clear'],
+            description: 'list=show requests, detail=full request+response for one entry, clear=reset history',
+          },
+          filter: {
+            type: 'string',
+            enum: ['all', 'fetch', 'xhr', 'fetch/xhr', 'document', 'css', 'js', 'font', 'img', 'media', 'manifest', 'websocket', 'wasm', 'other'],
+            description: 'Filter by resource type (default: all)',
+          },
+          request_id: {
+            type: 'string',
+            description: 'Request ID to inspect (required for action=detail)',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max entries to return (default: 30)',
+          },
+        },
+        required: ['action'],
+      },
     },
   ]
 }
@@ -449,6 +478,61 @@ export async function executeToolViaBackground(
       }
     }
 
+    case 'network_monitor': {
+      const action = (params.action as string) || 'list'
+
+      if (action === 'clear') {
+        clearNetworkEntries()
+        return ok('✅ Network history cleared.')
+      }
+
+      if (action === 'detail') {
+        const id = params.request_id as string
+        if (!id) return err('request_id is required for action=detail')
+        const entry = getNetworkEntryById(id)
+        if (!entry) return err(`No request found with id: ${id}`)
+        const lines: string[] = [
+          `🔵 ${entry.method} ${entry.url}`,
+          `Type: ${entry.type} | Status: ${entry.status ?? 'pending'}${entry.statusText ? ' ' + entry.statusText : ''} | Duration: ${entry.duration != null ? entry.duration + 'ms' : 'pending'} | Size: ${entry.size != null ? formatBytes(entry.size) : '?'}`,
+          `Time: ${new Date(entry.startTime).toLocaleTimeString()}`,
+          entry.error ? `❌ Error: ${entry.error}` : '',
+          '',
+          '── Request Headers ──',
+          entry.requestHeaders ? Object.entries(entry.requestHeaders).map(([k,v]) => `  ${k}: ${v}`).join('\n') : '  (none)',
+          '',
+          entry.requestBody ? `── Request Body ──\n${entry.requestBody.substring(0, 2000)}` : '',
+          '',
+          '── Response Headers ──',
+          entry.responseHeaders ? Object.entries(entry.responseHeaders).map(([k,v]) => `  ${k}: ${v}`).join('\n') : '  (none)',
+          '',
+          entry.responseBody ? `── Response Body ──\n${entry.responseBody.substring(0, 10000)}${entry.responseBody.length > 10000 ? '\n...[truncated]' : ''}` : '  (no body captured)',
+        ].filter(l => l !== '')
+        return ok(lines.join('\n'))
+      }
+
+      // action === 'list'
+      const entries = getNetworkEntries({
+        filter: params.filter as string,
+        limit: (params.limit as number) || 30,
+      })
+      if (!entries.length) {
+        return ok('No network requests captured yet.\nNetwork monitoring starts automatically on next page load after bridge connects.\nTip: reload the page or navigate somewhere to start capturing.')
+      }
+      const lines = entries.map(e => {
+        const status = e.status != null ? e.status : e.error ? 'ERR' : '...'
+        const dur = e.duration != null ? e.duration + 'ms' : '?ms'
+        const size = e.size != null ? formatBytes(e.size) : '?'
+        const icon = e.error ? '❌' : e.status && e.status >= 400 ? '🟡' : '✅'
+        const shortUrl = e.url.length > 80 ? e.url.substring(0, 77) + '...' : e.url
+        return `${icon} [${e.id.substring(0, 8)}] ${e.method} ${status} ${dur} ${size} [${e.type}] ${shortUrl}`
+      })
+      const total = getNetworkEntries({ filter: params.filter as string }).length
+      lines.unshift(`Network Requests (${entries.length}/${total} shown | filter: ${params.filter || 'all'})`)
+      lines.unshift('ID       Method Status  Dur    Size   Type       URL')
+      lines.unshift('─'.repeat(80))
+      return ok(lines.join('\n'))
+    }
+
     default:
       return err(`Unknown tool: ${name}`)
   }
@@ -469,6 +553,12 @@ function resultFromResponse(res: any): ToolResult {
   if (res?.error) return err(res.error)
   if (res?.success === false) return err(res.message || 'Action failed')
   return ok(typeof res?.message === 'string' ? res.message : JSON.stringify(res))
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return bytes + 'B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + 'MB'
 }
 
 // Wait for a tab to finish loading (status === 'complete')

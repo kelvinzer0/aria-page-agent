@@ -103,6 +103,14 @@ function injectDialogInterceptor() {
         },
       })
     }
+
+    // Forward network request events to background
+    if (e.data?.channel === 'ARIA_NETWORK') {
+      safeSend({
+        type: 'NETWORK_REQUEST',
+        entry: e.data,
+      })
+    }
   })
 }
 
