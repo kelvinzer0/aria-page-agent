@@ -19,6 +19,7 @@ export class MCPBridgeClient {
   private config: BridgeConfig
   private status: BridgeStatus = 'disconnected'
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private keepaliveInterval: ReturnType<typeof setInterval> | null = null
   private statusListeners: BridgeStatusListener[] = []
   private toolCallHandler: ((name: string, params: Record<string, unknown>) => Promise<ToolResult>) | null = null
   private room: string = ''
@@ -39,6 +40,7 @@ export class MCPBridgeClient {
 
   disconnect(): void {
     this.clearReconnect()
+    if (this.keepaliveInterval) { clearInterval(this.keepaliveInterval); this.keepaliveInterval = null }
     if (this.ws) {
       this.ws.close()
       this.ws = null
@@ -96,6 +98,12 @@ export class MCPBridgeClient {
     this.ws.onopen = () => {
       this.setStatus('connected')
       console.log('[MCPBridge] Connected, room:', this.room)
+      // Keepalive ping every 25s to prevent Chrome SW termination
+      this.keepaliveInterval = setInterval(() => {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ type: 'ping' }))
+        }
+      }, 25000)
     }
 
     this.ws.onmessage = (event) => {
@@ -109,6 +117,7 @@ export class MCPBridgeClient {
 
     this.ws.onclose = () => {
       this.ws = null
+      if (this.keepaliveInterval) { clearInterval(this.keepaliveInterval); this.keepaliveInterval = null }
       this.setStatus('disconnected')
       // Auto-reconnect after 5s
       this.reconnectTimer = setTimeout(() => {
