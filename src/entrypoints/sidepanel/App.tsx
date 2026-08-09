@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react'
 import SYSTEM_PROMPT_TEMPLATE from '../../agent/system_prompt.md?raw'
 import { TabManager, ConsolePanel } from './Panels'
 import { extractJson } from '../../executor'
+import { BridgePanel } from './BridgePanel'
 
 interface StepResult {
   stepNumber: number
@@ -287,7 +288,7 @@ export default function App() {
   })
   const [aomPreview, setAomPreview] = useState('')
   const [error, setError] = useState('')
-  const [activeView, setActiveView] = useState<'agent' | 'tabs' | 'console'>('agent')
+  const [activeView, setActiveView] = useState<'agent' | 'tabs' | 'console' | 'bridge'>('agent')
   const stepsEndRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -583,6 +584,7 @@ Analyze the browser state and determine your next action. Respond with JSON only
       }}>
         {([
           { key: 'agent' as const, label: '🤖 Agent', icon: '' },
+          { key: 'bridge' as const, label: '🌉 Bridge', icon: '' },
           { key: 'tabs' as const, label: '📑 Tabs', icon: '' },
           { key: 'console' as const, label: '💻 Console', icon: '' },
         ]).map(tab => (
@@ -721,6 +723,13 @@ Analyze the browser state and determine your next action. Respond with JSON only
         />
       </div>
       </>}
+
+      {/* Bridge View */}
+      {activeView === 'bridge' && (
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          <BridgePanel />
+        </div>
+      )}
 
       {/* Tabs View */}
       {activeView === 'tabs' && (

@@ -6,6 +6,7 @@
  * - Message routing between side panel and content scripts
  * - Tab management operations
  * - Debug tools coordination
+ * - MCP Bridge integration (start/stop, custom URL)
  */
 
 import {
@@ -32,6 +33,106 @@ import {
   getPerformanceMetrics,
 } from '../agent/debug'
 
+import { MCPBridgeClient, type BridgeConfig } from '../mcp/bridge'
+import { getToolDefinitions, executeToolViaBackground } from '../mcp/tools'
+
+// ─── MCP Bridge Instance ───
+let bridge: MCPBridgeClient | null = null
+
+// ─── Load saved config ───
+async function loadBridgeConfig(): Promise<BridgeConfig> {
+  const result = await chrome.storage.local.get(['bridgeUrl', 'bridgeRoom'])
+  return {
+    url: result.bridgeUrl || '',
+    room: result.bridgeRoom || '',
+  }
+}
+
+async function saveBridgeConfig(config: BridgeConfig): Promise<void> {
+  await chrome.storage.local.set({
+    bridgeUrl: config.url,
+    bridgeRoom: config.room || '',
+  })
+}
+
+// ─── Start Bridge ───
+async function startBridge(url: string): Promise<{ success: boolean; room?: string; mcpUrl?: string; error?: string }> {
+  if (bridge?.isConnected()) {
+    bridge.disconnect()
+  }
+
+  const config: BridgeConfig = { url: url.replace(/\/+$/, '') }
+  await saveBridgeConfig(config)
+
+  bridge = new MCPBridgeClient(config)
+
+  // Register tool call handler
+  bridge.setToolCallHandler(executeToolViaBackground)
+
+  // Register tools when connected
+  bridge.onStatusChange((status, room) => {
+    console.log('[AriaPageAgent] Bridge status:', status, 'room:', room)
+
+    if (status === 'connected' && bridge) {
+      // Register all tools
+      bridge.registerTools(getToolDefinitions())
+
+      // Update badge
+      chrome.action.setBadgeText({ text: '🟢' })
+      chrome.action.setBadgeBackgroundColor({ color: '#44ff44' })
+
+      // Save room
+      saveBridgeConfig({ url: config.url, room })
+    }
+
+    if (status === 'disconnected') {
+      chrome.action.setBadgeText({ text: '' })
+    }
+  })
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      resolve({ success: false, error: 'Connection timeout' })
+    }, 10000)
+
+    bridge!.onStatusChange((status, room) => {
+      if (status === 'connected') {
+        clearTimeout(timeout)
+        resolve({
+          success: true,
+          room,
+          mcpUrl: bridge?.getMcpUrl(),
+        })
+      }
+    })
+
+    bridge!.connect()
+  })
+}
+
+// ─── Stop Bridge ───
+function stopBridge(): void {
+  if (bridge) {
+    bridge.disconnect()
+    bridge = null
+  }
+  chrome.action.setBadgeText({ text: '' })
+}
+
+// ─── Get Bridge Status ───
+function getBridgeStatus(): { connected: boolean; room?: string; mcpUrl?: string; url?: string } {
+  if (!bridge) {
+    return { connected: false }
+  }
+  return {
+    connected: bridge.isConnected(),
+    room: bridge.getRoom(),
+    mcpUrl: bridge.getMcpUrl(),
+  }
+}
+
+// ─── Background Script ───
+
 export default defineBackground(() => {
   // Open side panel on icon click
   chrome.action.onClicked.addListener(async (tab) => {
@@ -46,8 +147,35 @@ export default defineBackground(() => {
   let dialogEvents: any[] = []
   const MAX_DIALOGS = 50
 
+  // Auto-start bridge if URL was saved
+  loadBridgeConfig().then((config) => {
+    if (config.url) {
+      startBridge(config.url).catch((err) => {
+        console.warn('[AriaPageAgent] Auto-start bridge failed:', err)
+      })
+    }
+  })
+
   // Message handler
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+
+    // ─── MCP Bridge Control ───
+    if (message.type === 'BRIDGE_START') {
+      startBridge(message.url).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+      return true
+    }
+
+    if (message.type === 'BRIDGE_STOP') {
+      stopBridge()
+      sendResponse({ success: true })
+      return false
+    }
+
+    if (message.type === 'BRIDGE_STATUS') {
+      sendResponse(getBridgeStatus())
+      return false
+    }
+
     // ─── PAGE_CONTROL messages (route to content script) ───
     if (message.type === 'PAGE_CONTROL' && message.targetTabId) {
       chrome.tabs.sendMessage(message.targetTabId, message)
@@ -84,14 +212,14 @@ export default defineBackground(() => {
         sendResponse({ success: false, error: 'No tab ID' })
         return false
       }
-      
+
       chrome.scripting.executeScript({
         target: { tabId: senderTabId },
         world: 'MAIN',
         injectImmediately: true,
         func: () => {
           if ((window as any).__ariaDialogInterceptor) return
-          
+
           const sendDialog = (dialog: any) => {
             window.postMessage({
               channel: 'ARIA_PAGE_AGENT_DIALOG',
@@ -99,26 +227,26 @@ export default defineBackground(() => {
               timestamp: Date.now(),
             }, '*')
           }
-          
+
           window.alert = function(message?: any) {
             sendDialog({ type: 'alert', message: String(message ?? '') })
           }
-          
+
           window.confirm = function(message?: any) {
             sendDialog({ type: 'confirm', message: String(message ?? ''), response: true })
             return true
           }
-          
+
           window.prompt = function(message?: any, defaultText?: string) {
             const msg = String(message ?? '')
             sendDialog({ type: 'prompt', message: msg, response: defaultText || '' })
             return defaultText || ''
           }
-          
+
           window.addEventListener('beforeunload', (e) => {
             sendDialog({ type: 'beforeunload', message: e.returnValue || 'Page navigating away' })
           })
-          
+
           ;(window as any).__ariaDialogInterceptor = true
         },
       }).then(() => {
@@ -126,7 +254,7 @@ export default defineBackground(() => {
       }).catch((err: Error) => {
         sendResponse({ success: false, error: err.message })
       })
-      
+
       return true // async response
     }
 
