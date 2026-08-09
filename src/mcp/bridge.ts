@@ -77,7 +77,7 @@ export class MCPBridgeClient {
   private async createRoom(): Promise<void> {
     try {
       const baseUrl = this.config.url.replace(/\/+$/, '')
-      const res = await fetch(`${baseUrl}/new`)
+      const res = await fetch(`${baseUrl}/mcp/new`)
       const data = await res.json()
 
       this.room = data.room
