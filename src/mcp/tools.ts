@@ -16,6 +16,7 @@ import {
 } from '../agent/tabs'
 import { getStoredConsoleLogs } from './consoleStore'
 import { getNetworkEntries, getNetworkEntryById, clearNetworkEntries } from './networkStore'
+import { isUrlInScope } from './scopeMatcher'
 
 // ─── Tool Definitions ───
 
@@ -491,8 +492,13 @@ export async function executeToolViaBackground(
         if (!id) return err('request_id is required for action=detail')
         const entry = getNetworkEntryById(id)
         if (!entry) return err(`No request found with id: ${id}`)
+        
+        const storageResult = await chrome.storage.local.get(['scopeConfig'])
+        const scopeStr = storageResult.scopeConfig || ''
+        const scopeLabel = isUrlInScope(entry.url, scopeStr) ? '[SCOPE_IN]' : '[SCOPE_OUT]'
+
         const lines: string[] = [
-          `🔵 ${entry.method} ${entry.url}`,
+          `🔵 ${scopeLabel} ${entry.method} ${entry.url}`,
           `Type: ${entry.type} | Status: ${entry.status ?? 'pending'}${entry.statusText ? ' ' + entry.statusText : ''} | Duration: ${entry.duration != null ? entry.duration + 'ms' : 'pending'} | Size: ${entry.size != null ? formatBytes(entry.size) : '?'}`,
           `Time: ${new Date(entry.startTime).toLocaleTimeString()}`,
           entry.error ? `❌ Error: ${entry.error}` : '',
@@ -518,18 +524,23 @@ export async function executeToolViaBackground(
       if (!entries.length) {
         return ok('No network requests captured yet.\nNetwork monitoring starts automatically on next page load after bridge connects.\nTip: reload the page or navigate somewhere to start capturing.')
       }
+
+      const storageResult = await chrome.storage.local.get(['scopeConfig'])
+      const scopeStr = storageResult.scopeConfig || ''
+
       const lines = entries.map(e => {
         const status = e.status != null ? e.status : e.error ? 'ERR' : '...'
         const dur = e.duration != null ? e.duration + 'ms' : '?ms'
         const size = e.size != null ? formatBytes(e.size) : '?'
         const icon = e.error ? '❌' : e.status && e.status >= 400 ? '🟡' : '✅'
+        const scopeLabel = isUrlInScope(e.url, scopeStr) ? '[SCOPE_IN]' : '[SCOPE_OUT]'
         const shortUrl = e.url.length > 80 ? e.url.substring(0, 77) + '...' : e.url
-        return `${icon} [${e.id.substring(0, 8)}] ${e.method} ${status} ${dur} ${size} [${e.type}] ${shortUrl}`
+        return `${icon} [${e.id.substring(0, 8)}] ${scopeLabel} ${e.method} ${status} ${dur} ${size} [${e.type}] ${shortUrl}`
       })
       const total = getNetworkEntries({ filter: params.filter as string }).length
       lines.unshift(`Network Requests (${entries.length}/${total} shown | filter: ${params.filter || 'all'})`)
-      lines.unshift('ID       Method Status  Dur    Size   Type       URL')
-      lines.unshift('─'.repeat(80))
+      lines.unshift('ID       Scope      Method Status  Dur    Size   Type       URL')
+      lines.unshift('─'.repeat(100))
       return ok(lines.join('\n'))
     }
 

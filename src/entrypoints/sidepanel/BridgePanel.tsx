@@ -11,15 +11,17 @@ interface BridgeState {
 
 export function BridgePanel() {
   const [bridgeUrl, setBridgeUrl] = useState('https://mcp-bridge.insidexofficial.workers.dev')
+  const [scopeConfig, setScopeConfig] = useState('')
   const [state, setState] = useState<BridgeState>({ connected: false })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
 
-  // Load bridgeUrl from chrome.storage on mount (persistent across extension restarts)
+  // Load bridgeUrl & scopeConfig from chrome.storage on mount
   useEffect(() => {
-    chrome.storage.local.get(['bridgeUrl'], (result) => {
+    chrome.storage.local.get(['bridgeUrl', 'scopeConfig'], (result) => {
       if (result.bridgeUrl) setBridgeUrl(result.bridgeUrl)
+      if (result.scopeConfig) setScopeConfig(result.scopeConfig)
     })
   }, [])
 
@@ -42,7 +44,7 @@ export function BridgePanel() {
     setLoading(true)
     setError('')
     // Save to chrome.storage (persists across extension updates/restarts)
-    chrome.storage.local.set({ bridgeUrl: bridgeUrl.trim() })
+    chrome.storage.local.set({ bridgeUrl: bridgeUrl.trim(), scopeConfig: scopeConfig.trim() })
 
     try {
       const result = await chrome.runtime.sendMessage({
@@ -124,6 +126,35 @@ export function BridgePanel() {
           }}
         />
       </div>
+
+      {/* Scope Config Input */}
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>
+          Scope Configuration (JSON)
+        </label>
+        <textarea
+          value={scopeConfig}
+          onChange={e => {
+            setScopeConfig(e.target.value)
+            chrome.storage.local.set({ scopeConfig: e.target.value })
+          }}
+          placeholder='{"target": {"scope": {...}}}'
+          style={{
+            width: '100%',
+            height: '80px',
+            padding: '8px 10px',
+            background: '#0f172a',
+            border: '1px solid #334155',
+            borderRadius: 6,
+            color: '#e2e8f0',
+            fontSize: 11,
+            fontFamily: 'monospace',
+            outline: 'none',
+            resize: 'vertical',
+          }}
+        />
+      </div>
+
 
       {/* Start/Stop + Reset Room Buttons */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
