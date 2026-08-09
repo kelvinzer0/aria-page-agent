@@ -173,11 +173,12 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
     {
       name: 'navigate',
-      description: 'Navigate current tab to a URL',
+      description: 'Navigate current tab to a URL and wait for it to fully load',
       inputSchema: {
         type: 'object',
         properties: {
           url: { type: 'string', description: 'URL to navigate to' },
+          wait_ms: { type: 'number', description: 'Extra ms to wait after page load for JS rendering (default: 1500, max: 10000)' },
         },
         required: ['url'],
       },
@@ -375,32 +376,35 @@ export async function executeToolViaBackground(
 
     case 'navigate': {
       const tab = await getTab()
+      const extraWait = Math.min((params.wait_ms as number) || 1500, 10000)
       await chrome.tabs.update(tab.id!, { url: params.url as string })
-      await new Promise(r => setTimeout(r, 2000))
-      const updated = await chrome.tabs.get(tab.id!)
+      const updated = await waitForTabLoad(tab.id!, 10000)
+      await new Promise(r => setTimeout(r, extraWait))
       return ok(`✅ Navigated to: "${updated.title}" (${updated.url})`)
     }
 
     case 'go_back': {
       const tab = await getTab()
       await chrome.tabs.goBack(tab.id!)
+      const updated = await waitForTabLoad(tab.id!, 8000)
       await new Promise(r => setTimeout(r, 1000))
-      const updated = await chrome.tabs.get(tab.id!)
       return ok(`✅ Went back to: "${updated.title}" (${updated.url})`)
     }
 
     case 'go_forward': {
       const tab = await getTab()
       await chrome.tabs.goForward(tab.id!)
+      const updated = await waitForTabLoad(tab.id!, 8000)
       await new Promise(r => setTimeout(r, 1000))
-      const updated = await chrome.tabs.get(tab.id!)
       return ok(`✅ Went forward to: "${updated.title}" (${updated.url})`)
     }
 
     case 'reload': {
       const tab = await getTab()
-      const res = await reloadTab(tab.id!)
-      return resultFromResponse(res)
+      await chrome.tabs.reload(tab.id!)
+      const updated = await waitForTabLoad(tab.id!, 10000)
+      await new Promise(r => setTimeout(r, 1000))
+      return ok(`✅ Reloaded: "${updated.title}" (${updated.url})`)
     }
 
     // ─── Debug Tools ──────────────────────────────────────────
@@ -467,4 +471,35 @@ function resultFromResponse(res: any): ToolResult {
   if (res?.error) return err(res.error)
   if (res?.success === false) return err(res.message || 'Action failed')
   return ok(typeof res?.message === 'string' ? res.message : JSON.stringify(res))
+}
+
+// Wait for a tab to finish loading (status === 'complete')
+// Uses onUpdated listener for efficiency, falls back to polling on timeout
+function waitForTabLoad(tabId: number, timeoutMs = 10000): Promise<chrome.tabs.Tab> {
+  return new Promise((resolve) => {
+    let resolved = false
+
+    const finish = async () => {
+      if (resolved) return
+      resolved = true
+      chrome.tabs.onUpdated.removeListener(listener)
+      clearTimeout(timer)
+      const tab = await chrome.tabs.get(tabId).catch(() => ({ id: tabId } as chrome.tabs.Tab))
+      resolve(tab)
+    }
+
+    const listener = (updatedTabId: number, info: chrome.tabs.TabChangeInfo) => {
+      if (updatedTabId === tabId && info.status === 'complete') finish()
+    }
+
+    chrome.tabs.onUpdated.addListener(listener)
+
+    // Fallback: if already complete or timeout fires
+    const timer = setTimeout(finish, timeoutMs)
+
+    // Check immediately in case tab is already complete
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab.status === 'complete') finish()
+    }).catch(() => {})
+  })
 }
