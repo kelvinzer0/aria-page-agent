@@ -148,20 +148,23 @@ export default defineBackground(() => {
   })
 
   // Console log collection from content scripts
-  const consoleLogs: any[] = []
-  const MAX_LOGS = 500
+  // (unused local array — shared store in consoleStore.ts is the source of truth)
   let dialogEvents: any[] = []
   const MAX_DIALOGS = 50
 
-  // ─── Auto-inject console capture into every tab on load ───
-  // Captures: log, warn, error, info, debug + unhandled errors + promise rejections
-  const injectConsoleCaptureScript = (tabId: number) => {
+  // ─── Auto-inject console capture + dialog interceptor on every tab load ───
+  // Single combined inject eliminates duplicate log entries.
+  // Guard flag __ariaPageAgentReady prevents double-injection on revisit.
+  const injectMainWorldScripts = (tabId: number) => {
     chrome.scripting.executeScript({
       target: { tabId },
       world: 'MAIN',
       injectImmediately: false,
       func: () => {
-        if ((window as any).__ariaConsoleCapture) return
+        if ((window as any).__ariaPageAgentReady) return
+        ;(window as any).__ariaPageAgentReady = true
+
+        // ── Console capture (all 5 levels + errors + rejections) ──
         const orig: Record<string, any> = {}
         ;['log','warn','error','info','debug'].forEach(t => {
           orig[t] = (console as any)[t].bind(console)
@@ -177,14 +180,20 @@ export default defineBackground(() => {
           }
         })
         window.addEventListener('error', e => window.postMessage({ channel: 'ARIA_PAGE_AGENT_CONSOLE', type: 'error', args: [`${e.message} @ ${e.filename}:${e.lineno}`], timestamp: Date.now(), source: location.href }, '*'))
-        window.addEventListener('unhandledrejection', e => window.postMessage({ channel: 'ARIA_PAGE_AGENT_CONSOLE', type: 'error', args: [`Unhandled Promise Rejection: ${e.reason}`], timestamp: Date.now(), source: location.href }, '*'))
-        ;(window as any).__ariaConsoleCapture = true
+        window.addEventListener('unhandledrejection', e => window.postMessage({ channel: 'ARIA_PAGE_AGENT_CONSOLE', type: 'error', args: [`Unhandled Promise Rejection: ${String(e.reason)}`], timestamp: Date.now(), source: location.href }, '*'))
+
+        // ── Dialog interceptor ──
+        const sendDialog = (d: any) => window.postMessage({ channel: 'ARIA_PAGE_AGENT_DIALOG', ...d, timestamp: Date.now() }, '*')
+        window.alert = (m?: any) => sendDialog({ type: 'alert', message: String(m ?? '') })
+        window.confirm = (m?: any) => { sendDialog({ type: 'confirm', message: String(m ?? ''), response: true }); return true }
+        window.prompt = (m?: any, def?: string) => { sendDialog({ type: 'prompt', message: String(m ?? ''), response: def || '' }); return def || '' }
+        window.addEventListener('beforeunload', e => sendDialog({ type: 'beforeunload', message: e.returnValue || 'Page navigating away' }))
       },
     }).catch(() => {/* non-injectable tabs like chrome:// */})
   }
 
   chrome.tabs.onUpdated.addListener((tabId, info) => {
-    if (info.status === 'complete') injectConsoleCaptureScript(tabId)
+    if (info.status === 'complete') injectMainWorldScripts(tabId)
   })
 
   // Auto-start bridge if URL was saved
@@ -252,57 +261,19 @@ export default defineBackground(() => {
       return false
     }
 
-    // ─── Inject dialog interceptor into MAIN world ───
+    // ─── Inject MAIN world scripts (console + dialog) ───
+    // Now handled automatically by tabs.onUpdated above.
+    // This handler is kept for backward compat with content.ts calling it on document_start.
     if (message.type === 'INJECT_DIALOG_INTERCEPTOR') {
       const senderTabId = sender.tab?.id
       if (!senderTabId) {
         sendResponse({ success: false, error: 'No tab ID' })
         return false
       }
-
-      chrome.scripting.executeScript({
-        target: { tabId: senderTabId },
-        world: 'MAIN',
-        injectImmediately: true,
-        func: () => {
-          if ((window as any).__ariaDialogInterceptor) return
-
-          const sendDialog = (dialog: any) => {
-            window.postMessage({
-              channel: 'ARIA_PAGE_AGENT_DIALOG',
-              ...dialog,
-              timestamp: Date.now(),
-            }, '*')
-          }
-
-          window.alert = function(message?: any) {
-            sendDialog({ type: 'alert', message: String(message ?? '') })
-          }
-
-          window.confirm = function(message?: any) {
-            sendDialog({ type: 'confirm', message: String(message ?? ''), response: true })
-            return true
-          }
-
-          window.prompt = function(message?: any, defaultText?: string) {
-            const msg = String(message ?? '')
-            sendDialog({ type: 'prompt', message: msg, response: defaultText || '' })
-            return defaultText || ''
-          }
-
-          window.addEventListener('beforeunload', (e) => {
-            sendDialog({ type: 'beforeunload', message: e.returnValue || 'Page navigating away' })
-          })
-
-          ;(window as any).__ariaDialogInterceptor = true
-        },
-      }).then(() => {
-        sendResponse({ success: true })
-      }).catch((err: Error) => {
-        sendResponse({ success: false, error: err.message })
-      })
-
-      return true // async response
+      // Trigger same combined inject (guard prevents double-run)
+      injectMainWorldScripts(senderTabId)
+      sendResponse({ success: true })
+      return false
     }
 
     // ─── Get dialog events ───

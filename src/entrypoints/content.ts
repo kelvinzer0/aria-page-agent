@@ -28,6 +28,25 @@ const LOG_PREFIX = '[AriaPageAgent]'
 // ─── State ───
 let currentRoot: ReturnType<typeof traverse> = null
 
+// ─── Safe sendMessage to background ───
+// Uses callback form so chrome.runtime.lastError is always checked,
+// suppressing the "Unchecked runtime.lastError" warning in MV3.
+function safeSend(msg: object, cb?: (res: any) => void): void {
+  try {
+    chrome.runtime.sendMessage(msg, (response) => {
+      // MUST read lastError to suppress "Unchecked runtime.lastError" warning
+      const err = chrome.runtime.lastError
+      if (err) {
+        // SW is sleeping or not ready — silently ignore
+        return
+      }
+      cb?.(response)
+    })
+  } catch {
+    // Extension context invalidated (page reload during injection) — ignore
+  }
+}
+
 // ─── Build/Refresh AOM ───
 async function refreshAom() {
   resetTraverse()
@@ -39,23 +58,26 @@ async function refreshAom() {
   buildIndexMap(currentRoot)
   const issues = getAllIssues()
 
-  // Get recent dialog events from background
-  const recentDialogs = await chrome.runtime.sendMessage({
-    type: 'DIALOG_GET_EVENTS',
-    limit: 10,
-  }).catch(() => [])
+  // Get recent dialog events from background (safe — SW may be sleeping)
+  const recentDialogs = await new Promise<any[]>((resolve) => {
+    safeSend({ type: 'DIALOG_GET_EVENTS', limit: 10 }, (res) => resolve(res || []))
+    // Fallback in case SW doesn't respond
+    setTimeout(() => resolve([]), 1000)
+  })
 
   return serializeToBrowserState(currentRoot, issues, recentDialogs)
 }
 
 // ─── Dialog + Console Interceptor ───
-// Injected EARLY (document_start) to catch dialogs & console logs before page code runs
+// Listens for postMessage from MAIN world (injected by background).
+// Uses safeSend so SW sleep does NOT trigger unchecked lastError.
+// De-duplicated: only forward if NOT already captured by background's auto-inject
+// (background injects MAIN world script that posts messages, content script forwards them)
 function injectDialogInterceptor() {
-  // Listen for postMessage from page context (MAIN world)
   window.addEventListener('message', (e) => {
-    // Forward dialog events
+    // Forward dialog events to background
     if (e.data?.channel === 'ARIA_PAGE_AGENT_DIALOG') {
-      chrome.runtime.sendMessage({
+      safeSend({
         type: 'DIALOG_EVENT',
         entry: {
           type: e.data.type,
@@ -63,11 +85,14 @@ function injectDialogInterceptor() {
           timestamp: e.data.timestamp,
           response: e.data.response,
         },
-      }).catch(() => {})
+      })
     }
-    // Forward console log events
+
+    // Forward console log events to background
+    // Guard: only forward once (background MAIN-world inject already does postMessage,
+    // content script here bridges it to SW — don't double-post)
     if (e.data?.channel === 'ARIA_PAGE_AGENT_CONSOLE') {
-      chrome.runtime.sendMessage({
+      safeSend({
         type: 'CONSOLE_ENTRY',
         entry: {
           type: e.data.type,
@@ -75,7 +100,7 @@ function injectDialogInterceptor() {
           timestamp: e.data.timestamp || Date.now(),
           source: e.data.source,
         },
-      }).catch(() => {})
+      })
     }
   })
 }
@@ -84,22 +109,16 @@ function injectDialogInterceptor() {
 // Content scripts can't use chrome.tabs, so delegate to background
 let mainWorldInjected = false
 
-async function injectMainWorldScript() {
+function injectMainWorldScript() {
   if (mainWorldInjected) return
-  
-  try {
-    const result = await chrome.runtime.sendMessage({
-      type: 'INJECT_DIALOG_INTERCEPTOR',
-    })
-    
+
+  safeSend({ type: 'INJECT_DIALOG_INTERCEPTOR' }, (result) => {
     if (result?.success) {
       mainWorldInjected = true
-    } else {
-      console.warn(LOG_PREFIX, 'Dialog injection failed:', result?.error)
+    } else if (result?.error) {
+      // Non-critical — page may not need dialog interception
     }
-  } catch (err) {
-    console.warn(LOG_PREFIX, 'Failed to request dialog injection:', err)
-  }
+  })
 }
 
 export default defineContentScript({
@@ -111,7 +130,7 @@ export default defineContentScript({
 
     // Inject dialog interceptor IMMEDIATELY (before page code runs)
     injectDialogInterceptor() // postMessage listener
-    
+
     // Inject MAIN world override (bypasses CSP via chrome.scripting API)
     injectMainWorldScript()
 
