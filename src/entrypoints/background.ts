@@ -35,6 +35,7 @@ import {
 
 import { MCPBridgeClient, type BridgeConfig } from '../mcp/bridge'
 import { getToolDefinitions, executeToolViaBackground } from '../mcp/tools'
+import { pushConsoleLog } from '../mcp/consoleStore'
 
 // ─── MCP Bridge Instance ───
 let bridge: MCPBridgeClient | null = null
@@ -152,6 +153,40 @@ export default defineBackground(() => {
   let dialogEvents: any[] = []
   const MAX_DIALOGS = 50
 
+  // ─── Auto-inject console capture into every tab on load ───
+  // Captures: log, warn, error, info, debug + unhandled errors + promise rejections
+  const injectConsoleCaptureScript = (tabId: number) => {
+    chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      injectImmediately: false,
+      func: () => {
+        if ((window as any).__ariaConsoleCapture) return
+        const orig: Record<string, any> = {}
+        ;['log','warn','error','info','debug'].forEach(t => {
+          orig[t] = (console as any)[t].bind(console)
+          ;(console as any)[t] = (...args: any[]) => {
+            orig[t](...args)
+            window.postMessage({
+              channel: 'ARIA_PAGE_AGENT_CONSOLE',
+              type: t,
+              args: args.map(a => { try { return typeof a === 'object' ? JSON.stringify(a) : String(a) } catch { return String(a) } }),
+              timestamp: Date.now(),
+              source: location.href,
+            }, '*')
+          }
+        })
+        window.addEventListener('error', e => window.postMessage({ channel: 'ARIA_PAGE_AGENT_CONSOLE', type: 'error', args: [`${e.message} @ ${e.filename}:${e.lineno}`], timestamp: Date.now(), source: location.href }, '*'))
+        window.addEventListener('unhandledrejection', e => window.postMessage({ channel: 'ARIA_PAGE_AGENT_CONSOLE', type: 'error', args: [`Unhandled Promise Rejection: ${e.reason}`], timestamp: Date.now(), source: location.href }, '*'))
+        ;(window as any).__ariaConsoleCapture = true
+      },
+    }).catch(() => {/* non-injectable tabs like chrome:// */})
+  }
+
+  chrome.tabs.onUpdated.addListener((tabId, info) => {
+    if (info.status === 'complete') injectConsoleCaptureScript(tabId)
+  })
+
   // Auto-start bridge if URL was saved
   loadBridgeConfig().then((config) => {
     if (config.url) {
@@ -202,12 +237,9 @@ export default defineBackground(() => {
       return true
     }
 
-    // ─── Console entry from content script ───
+    // ─── Console entry from content script → shared store ───
     if (message.type === 'CONSOLE_ENTRY') {
-      consoleLogs.push(message.entry)
-      if (consoleLogs.length > MAX_LOGS) {
-        consoleLogs.splice(0, consoleLogs.length - MAX_LOGS)
-      }
+      pushConsoleLog(message.entry)
       return false
     }
 

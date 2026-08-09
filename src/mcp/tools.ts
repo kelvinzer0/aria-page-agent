@@ -14,9 +14,7 @@ import {
   closeTab,
   reloadTab,
 } from '../agent/tabs'
-import {
-  getConsoleLogs,
-} from '../agent/debug'
+import { getStoredConsoleLogs } from './consoleStore'
 
 // ─── Tool Definitions ───
 
@@ -410,12 +408,12 @@ export async function executeToolViaBackground(
     // ─── Debug Tools ──────────────────────────────────────────
 
     case 'get_console_logs': {
-      const logs = await getConsoleLogs({
-        limit: params.limit as number || 20,
+      const logs = getStoredConsoleLogs({
+        limit: (params.limit as number) || 20,
         type: params.level as string,
       })
-      if (!logs?.length) return ok('No console logs captured yet.')
-      return ok(logs.map((l: any) => `[${l.type}] ${l.args?.join(' ')}`).join('\n'))
+      if (!logs.length) return ok('No console logs captured yet. Logs are captured automatically after the next page load.')
+      return ok(logs.map(l => `[${l.type.toUpperCase()}] ${l.args?.join(' ')}`).join('\n'))
     }
 
     case 'execute_script': {

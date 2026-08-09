@@ -48,12 +48,12 @@ async function refreshAom() {
   return serializeToBrowserState(currentRoot, issues, recentDialogs)
 }
 
-// ─── Dialog Interceptor ───
-// Injected EARLY (document_start) to catch dialogs before page code runs
+// ─── Dialog + Console Interceptor ───
+// Injected EARLY (document_start) to catch dialogs & console logs before page code runs
 function injectDialogInterceptor() {
-  // Already injected by the MAIN world script injection below
-  // This is a backup: listen for postMessage from page context
+  // Listen for postMessage from page context (MAIN world)
   window.addEventListener('message', (e) => {
+    // Forward dialog events
     if (e.data?.channel === 'ARIA_PAGE_AGENT_DIALOG') {
       chrome.runtime.sendMessage({
         type: 'DIALOG_EVENT',
@@ -62,6 +62,18 @@ function injectDialogInterceptor() {
           message: e.data.message,
           timestamp: e.data.timestamp,
           response: e.data.response,
+        },
+      }).catch(() => {})
+    }
+    // Forward console log events
+    if (e.data?.channel === 'ARIA_PAGE_AGENT_CONSOLE') {
+      chrome.runtime.sendMessage({
+        type: 'CONSOLE_ENTRY',
+        entry: {
+          type: e.data.type,
+          args: e.data.args,
+          timestamp: e.data.timestamp || Date.now(),
+          source: e.data.source,
         },
       }).catch(() => {})
     }
