@@ -35,7 +35,13 @@ export class MCPBridgeClient {
     if (this.ws) this.disconnect()
 
     this.setStatus('connecting')
-    this.createRoom()
+    // Reuse existing room if already assigned (persistent per device)
+    if (this.room) {
+      const wsUrl = `${this.config.url.replace(/\/+$/, '').replace('https://', 'wss://').replace('http://', 'ws://')}/ws/extension?room=${this.room}`
+      this.connectWebSocket(wsUrl)
+    } else {
+      this.createRoom()
+    }
   }
 
   disconnect(): void {
@@ -45,8 +51,14 @@ export class MCPBridgeClient {
       this.ws.close()
       this.ws = null
     }
-    this.room = ''
+    // NOTE: intentionally NOT clearing this.room — room is permanent per device
     this.setStatus('disconnected')
+  }
+
+  // Reset room (only called when user explicitly wants a new room)
+  resetRoom(): void {
+    this.room = ''
+    this.config.room = undefined
   }
 
   isConnected(): boolean {
@@ -122,9 +134,9 @@ export class MCPBridgeClient {
       this.ws = null
       if (this.keepaliveInterval) { clearInterval(this.keepaliveInterval); this.keepaliveInterval = null }
       this.setStatus('disconnected')
-      // Auto-reconnect after 5s
+      // Auto-reconnect after 5s, reusing the same room
       this.reconnectTimer = setTimeout(() => {
-        if (this.config.url) this.createRoom()
+        if (this.config.url) this.connect()
       }, 5000)
     }
 

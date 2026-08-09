@@ -10,13 +10,18 @@ interface BridgeState {
 }
 
 export function BridgePanel() {
-  const [bridgeUrl, setBridgeUrl] = useState(
-    localStorage.getItem('bridge_url') || 'https://mcp-bridge.insidexofficial.workers.dev'
-  )
+  const [bridgeUrl, setBridgeUrl] = useState('https://mcp-bridge.insidexofficial.workers.dev')
   const [state, setState] = useState<BridgeState>({ connected: false })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
+
+  // Load bridgeUrl from chrome.storage on mount (persistent across extension restarts)
+  useEffect(() => {
+    chrome.storage.local.get(['bridgeUrl'], (result) => {
+      if (result.bridgeUrl) setBridgeUrl(result.bridgeUrl)
+    })
+  }, [])
 
   // Poll status
   const refreshStatus = useCallback(async () => {
@@ -36,7 +41,8 @@ export function BridgePanel() {
 
     setLoading(true)
     setError('')
-    localStorage.setItem('bridge_url', bridgeUrl)
+    // Save to chrome.storage (persists across extension updates/restarts)
+    chrome.storage.local.set({ bridgeUrl: bridgeUrl.trim() })
 
     try {
       const result = await chrome.runtime.sendMessage({
@@ -64,6 +70,13 @@ export function BridgePanel() {
   // Stop bridge
   const handleStop = async () => {
     await chrome.runtime.sendMessage({ type: 'BRIDGE_STOP' })
+    setState({ connected: false })
+  }
+
+  // Reset room (force new room on next connect)
+  const handleResetRoom = async () => {
+    if (!window.confirm('This will generate a new room ID and change your MCP URL.\nYou will need to update your MCP client config.\n\nContinue?')) return
+    await chrome.runtime.sendMessage({ type: 'BRIDGE_RESET_ROOM' })
     setState({ connected: false })
   }
 
@@ -112,7 +125,7 @@ export function BridgePanel() {
         />
       </div>
 
-      {/* Start/Stop Button */}
+      {/* Start/Stop + Reset Room Buttons */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         {state.connected ? (
           <button
@@ -151,6 +164,21 @@ export function BridgePanel() {
             {loading ? '⏳ Connecting...' : '▶ Start Bridge'}
           </button>
         )}
+        <button
+          onClick={handleResetRoom}
+          title="Generate a new room ID (changes MCP URL)"
+          style={{
+            padding: '10px 10px',
+            background: '#1e293b',
+            border: '1px solid #475569',
+            borderRadius: 6,
+            color: '#94a3b8',
+            fontSize: 13,
+            cursor: 'pointer',
+          }}
+        >
+          🔄
+        </button>
       </div>
 
       {/* Error */}

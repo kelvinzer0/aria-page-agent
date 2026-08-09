@@ -61,7 +61,12 @@ async function startBridge(url: string): Promise<{ success: boolean; room?: stri
     bridge.disconnect()
   }
 
-  const config: BridgeConfig = { url: url.replace(/\/+$/, '') }
+  // Load saved room to persist it across restarts
+  const saved = await loadBridgeConfig()
+  const config: BridgeConfig = {
+    url: url.replace(/\/+$/, ''),
+    room: saved.room || undefined,   // ← reuse saved room, empty string → undefined
+  }
   await saveBridgeConfig(config)
 
   bridge = new MCPBridgeClient(config)
@@ -174,6 +179,16 @@ export default defineBackground(() => {
     if (message.type === 'BRIDGE_STATUS') {
       sendResponse(getBridgeStatus())
       return false
+    }
+
+    // Reset room: clears saved room so next connect creates a new one
+    if (message.type === 'BRIDGE_RESET_ROOM') {
+      stopBridge()
+      if (bridge) bridge.resetRoom()
+      chrome.storage.local.remove(['bridgeRoom']).then(() => {
+        sendResponse({ success: true })
+      })
+      return true
     }
 
     // ─── PAGE_CONTROL messages (route to content script) ───
