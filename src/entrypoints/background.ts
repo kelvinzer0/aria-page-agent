@@ -203,7 +203,7 @@ export default defineBackground(() => {
             reqMethod = req.method
             req.headers.forEach((v:string, k:string) => reqHeaders[k] = v)
             reqBody = await req.clone().text().catch(() => '') as string
-            if (reqBody.length > 5000) reqBody = reqBody.substring(0, 5000) + '...[truncated]'
+            if (reqBody.length > 500000) reqBody = reqBody.substring(0, 500000) + '...[truncated at 500KB]'
           } catch {}
           try {
             const res = await _origFetch.apply(this, args)
@@ -214,7 +214,7 @@ export default defineBackground(() => {
             let resBody = ''
             if (ct.includes('json') || ct.includes('text') || ct.includes('xml')) {
               resBody = await resClone.text().catch(() => '') as string
-              if (resBody.length > 50000) resBody = resBody.substring(0, 50000) + '\n...[truncated]'
+              if (resBody.length > 5000000) resBody = resBody.substring(0, 5000000) + '\n...[truncated at 5MB]'
             }
             const size = parseInt(res.headers.get('content-length') || '0') || resBody.length
             window.postMessage({ channel: 'ARIA_NETWORK', id, url: reqUrl || res.url, method: reqMethod, type: 'fetch', status: res.status, statusText: res.statusText, requestHeaders: reqHeaders, responseHeaders: resHeaders, requestBody: reqBody, responseBody: resBody, size, duration: Date.now()-start, startTime: start, endTime: Date.now() }, '*')
@@ -241,11 +241,11 @@ export default defineBackground(() => {
           xhr.setRequestHeader = function(k: string, v: string) { reqHeaders[k] = v; return origSetHeader(k, v) }
           const origSend = xhr.send.bind(xhr)
           xhr.send = function(body?: any) {
-            if (body) { try { reqBody = typeof body === 'string' ? body.substring(0, 5000) : JSON.stringify(body).substring(0, 5000) } catch {} }
+            if (body) { try { reqBody = typeof body === 'string' ? body.substring(0, 500000) : JSON.stringify(body).substring(0, 500000) } catch {} }
             xhr.addEventListener('load', () => {
               const ct = xhr.getResponseHeader('content-type') || ''
               let resBody = ''
-              if (ct.includes('json') || ct.includes('text') || ct.includes('xml')) { try { resBody = (xhr.responseText || '').substring(0, 50000) } catch {} }
+              if (ct.includes('json') || ct.includes('text') || ct.includes('xml')) { try { resBody = (xhr.responseText || '').substring(0, 5000000) } catch {} }
               const resHeaders: Record<string,string> = {}
               try { xhr.getAllResponseHeaders().split('\r\n').forEach((h: string) => { const [k,...v] = h.split(': '); if(k) resHeaders[k.toLowerCase()] = v.join(': ') }) } catch {}
               window.postMessage({ channel: 'ARIA_NETWORK', id, url, method, type: 'xhr', status: xhr.status, statusText: xhr.statusText, requestHeaders: reqHeaders, responseHeaders: resHeaders, requestBody: reqBody, responseBody: resBody, size: resBody.length || xhr.response?.byteLength || 0, duration: Date.now()-start, startTime: start, endTime: Date.now() }, '*')

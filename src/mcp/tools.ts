@@ -251,6 +251,14 @@ export function getToolDefinitions(): ToolDefinition[] {
             type: 'number',
             description: 'Max entries to return (default: 30)',
           },
+          chunk_index: {
+            type: 'number',
+            description: 'For detail view: which chunk of the body to return (0-indexed). Use to read large response bodies.',
+          },
+          chunk_size: {
+            type: 'number',
+            description: 'For detail view: size of each chunk in characters (default: 10000)',
+          }
         },
         required: ['action'],
       },
@@ -496,6 +504,20 @@ export async function executeToolViaBackground(
         const storageResult = await chrome.storage.local.get(['scopeConfig'])
         const scopeStr = storageResult.scopeConfig || ''
         const scopeLabel = isUrlInScope(entry.url, scopeStr) ? '[SCOPE_IN]' : '[SCOPE_OUT]'
+        
+        const chunkIndex = typeof params.chunk_index === 'number' ? params.chunk_index : 0
+        const chunkSize = typeof params.chunk_size === 'number' ? params.chunk_size : 10000
+        const start = chunkIndex * chunkSize
+        const end = start + chunkSize
+        
+        const formatBody = (body?: string, label = 'Body') => {
+          if (!body) return `  (no ${label.toLowerCase()} captured)`
+          const totalChunks = Math.ceil(body.length / chunkSize)
+          if (start >= body.length) return `  (chunk ${chunkIndex} out of bounds, total chunks: ${totalChunks})`
+          const slice = body.substring(start, end)
+          const info = body.length > chunkSize ? ` (chunk ${chunkIndex + 1} of ${totalChunks})` : ''
+          return `── ${label}${info} ──\n${slice}`
+        }
 
         const lines: string[] = [
           `🔵 ${scopeLabel} ${entry.method} ${entry.url}`,
@@ -504,14 +526,14 @@ export async function executeToolViaBackground(
           entry.error ? `❌ Error: ${entry.error}` : '',
           '',
           '── Request Headers ──',
-          entry.requestHeaders ? Object.entries(entry.requestHeaders).map(([k,v]) => `  ${k}: ${v}`).join('\n') : '  (none)',
+          entry.requestHeaders && Object.keys(entry.requestHeaders).length ? Object.entries(entry.requestHeaders).map(([k,v]) => `  ${k}: ${v}`).join('\n') : '  (none)',
           '',
-          entry.requestBody ? `── Request Body ──\n${entry.requestBody.substring(0, 2000)}` : '',
+          formatBody(entry.requestBody, 'Request Body'),
           '',
           '── Response Headers ──',
-          entry.responseHeaders ? Object.entries(entry.responseHeaders).map(([k,v]) => `  ${k}: ${v}`).join('\n') : '  (none)',
+          entry.responseHeaders && Object.keys(entry.responseHeaders).length ? Object.entries(entry.responseHeaders).map(([k,v]) => `  ${k}: ${v}`).join('\n') : '  (none)',
           '',
-          entry.responseBody ? `── Response Body ──\n${entry.responseBody.substring(0, 10000)}${entry.responseBody.length > 10000 ? '\n...[truncated]' : ''}` : '  (no body captured)',
+          formatBody(entry.responseBody, 'Response Body'),
         ].filter(l => l !== '')
         return ok(lines.join('\n'))
       }
