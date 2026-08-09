@@ -98,12 +98,15 @@ export class MCPBridgeClient {
     this.ws.onopen = () => {
       this.setStatus('connected')
       console.log('[MCPBridge] Connected, room:', this.room)
-      // Keepalive ping every 25s to prevent Chrome SW termination
-      this.keepaliveInterval = setInterval(() => {
+      // Keepalive ping to prevent Chrome SW termination
+      // Send first ping immediately, then every 25s
+      const sendPing = () => {
         if (this.ws?.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({ type: 'ping' }))
+          this.ws.send(JSON.stringify({ type: 'pong' }))
         }
-      }, 25000)
+      }
+      sendPing()
+      this.keepaliveInterval = setInterval(sendPing, 25000)
     }
 
     this.ws.onmessage = (event) => {
