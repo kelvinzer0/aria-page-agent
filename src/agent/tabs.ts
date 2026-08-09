@@ -40,7 +40,7 @@ export async function listTabs(): Promise<TabInfo[]> {
 
 // ─── Get current tab ───
 export async function getCurrentTab(): Promise<TabInfo | null> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
   if (!tab?.id) return null
   return {
     id: tab.id,
@@ -96,7 +96,7 @@ export async function closeTab(tabId: number): Promise<{ success: boolean; messa
 // ─── Navigate to URL ───
 export async function navigateTo(url: number | string): Promise<{ success: boolean; message: string }> {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
     if (!tab?.id) return { success: false, message: 'No active tab' }
 
     await chrome.tabs.update(tab.id, { url: typeof url === 'string' ? url : undefined })
@@ -112,7 +112,7 @@ export async function navigateTo(url: number | string): Promise<{ success: boole
 // ─── Go back ───
 export async function goBack(): Promise<{ success: boolean; message: string }> {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
     if (!tab?.id) return { success: false, message: 'No active tab' }
 
     await chrome.tabs.goBack(tab.id)
@@ -127,7 +127,7 @@ export async function goBack(): Promise<{ success: boolean; message: string }> {
 // ─── Go forward ───
 export async function goForward(): Promise<{ success: boolean; message: string }> {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
     if (!tab?.id) return { success: false, message: 'No active tab' }
 
     await chrome.tabs.goForward(tab.id)

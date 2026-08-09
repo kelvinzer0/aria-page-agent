@@ -1,11 +1,22 @@
 /**
- * MCP Tool Definitions
+ * MCP Tool Definitions & Execution
  *
  * Maps AOM/executor capabilities to MCP tool definitions.
- * Each tool calls into the content script via background message routing.
+ * executeToolViaBackground runs INSIDE the background service worker,
+ * so it must call Chrome APIs directly — NOT via chrome.runtime.sendMessage.
  */
 
 import type { ToolDefinition, ToolResult } from './bridge'
+import {
+  listTabs,
+  switchToTab,
+  openNewTab,
+  closeTab,
+  reloadTab,
+} from '../agent/tabs'
+import {
+  getConsoleLogs,
+} from '../agent/debug'
 
 // ─── Tool Definitions ───
 
@@ -219,187 +230,221 @@ export function getToolDefinitions(): ToolDefinition[] {
 }
 
 // ─── Tool Execution ───
+// This function runs INSIDE the background service worker.
+// Use Chrome APIs directly — never chrome.runtime.sendMessage to self.
 
 export async function executeToolViaBackground(
   name: string,
   params: Record<string, unknown>
 ): Promise<ToolResult> {
-  const send = (msg: any): Promise<any> =>
-    chrome.runtime.sendMessage(msg)
+
+  // ── Helper: get the active tab in the last focused window ──
+  // (service workers have no "currentWindow", so use lastFocusedWindow)
+  const getTab = async (): Promise<chrome.tabs.Tab> => {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+    if (!tab?.id) throw new Error('No active tab found')
+    return tab
+  }
+
+  // ── Helper: send a PAGE_CONTROL message to the content script in a tab ──
+  const pageControl = async (tabId: number, action: string, payload?: any): Promise<any> => {
+    return chrome.tabs.sendMessage(tabId, { type: 'PAGE_CONTROL', action, payload })
+  }
 
   switch (name) {
+
+    // ─── Page Inspection ───────────────────────────────────────
+
+    case 'page_url': {
+      const tab = await getTab()
+      return ok(`${tab.url}\n${tab.title}`)
+    }
+
     case 'page_snapshot': {
-      const tab = await getActiveTab()
-      const state = await send({
-        type: 'PAGE_CONTROL',
-        targetTabId: tab.id,
-        action: 'get_browser_state',
-      })
+      const tab = await getTab()
+      const state = await pageControl(tab.id!, 'get_browser_state')
       if (state?.error) return err(state.error)
       return ok(JSON.stringify(state, null, 2))
     }
 
-    case 'page_url': {
-      const tab = await getActiveTab()
-      return ok(`${tab.url}\n${tab.title}`)
+    case 'get_accessibility_summary': {
+      const tab = await getTab()
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id! },
+        func: () => {
+          const issues: string[] = []
+          document.querySelectorAll('img').forEach(img => {
+            if (!img.hasAttribute('alt') && img.getAttribute('role') !== 'presentation')
+              issues.push(`❌ <img src="${img.src?.substring(0, 50)}"> missing alt`)
+          })
+          document.querySelectorAll('button, a[href]').forEach(el => {
+            const name = el.textContent?.trim() || el.getAttribute('aria-label') || el.getAttribute('title')
+            if (!name) issues.push(`❌ <${el.tagName.toLowerCase()}> has no accessible name`)
+          })
+          document.querySelectorAll('input, select, textarea').forEach(el => {
+            const id = el.id
+            const hasLabel = id && document.querySelector(`label[for="${id}"]`)
+            const hasAriaLabel = el.getAttribute('aria-label') || el.getAttribute('aria-labelledby')
+            const inLabel = el.closest('label')
+            if (!hasLabel && !hasAriaLabel && !inLabel && (el as HTMLInputElement).type !== 'hidden')
+              issues.push(`❌ <${el.tagName.toLowerCase()}> has no associated label`)
+          })
+          return issues.length > 0 ? issues.join('\n') : '✅ No obvious accessibility issues found'
+        },
+      })
+      return ok(String(results?.[0]?.result ?? 'No result'))
     }
 
+    // ─── Element Interaction (via content script) ──────────────
+
     case 'click': {
-      const tab = await getActiveTab()
-      const res = await send({
-        type: 'PAGE_CONTROL',
-        targetTabId: tab.id,
-        action: 'click_element',
-        payload: [params.index],
-      })
+      const tab = await getTab()
+      const res = await pageControl(tab.id!, 'click_element', [params.index])
       return resultFromResponse(res)
     }
 
     case 'type_text': {
-      const tab = await getActiveTab()
-      const res = await send({
-        type: 'PAGE_CONTROL',
-        targetTabId: tab.id,
-        action: 'input_text',
-        payload: [params.index, params.text],
-      })
+      const tab = await getTab()
+      const res = await pageControl(tab.id!, 'input_text', [params.index, params.text])
       return resultFromResponse(res)
     }
 
     case 'select_option': {
-      const tab = await getActiveTab()
-      const res = await send({
-        type: 'PAGE_CONTROL',
-        targetTabId: tab.id,
-        action: 'select_option',
-        payload: [params.index, params.option_text],
-      })
+      const tab = await getTab()
+      const res = await pageControl(tab.id!, 'select_option', [params.index, params.option_text])
       return resultFromResponse(res)
     }
 
     case 'toggle_check': {
-      const tab = await getActiveTab()
-      const res = await send({
-        type: 'PAGE_CONTROL',
-        targetTabId: tab.id,
-        action: 'toggle_check',
-        payload: [params.index, params.value],
-      })
+      const tab = await getTab()
+      const res = await pageControl(tab.id!, 'toggle_check', [params.index, params.value])
       return resultFromResponse(res)
     }
 
     case 'press_key': {
-      const tab = await getActiveTab()
-      const res = await send({
-        type: 'PAGE_CONTROL',
-        targetTabId: tab.id,
-        action: 'press_key',
-        payload: [params.index ?? null, params.key],
-      })
+      const tab = await getTab()
+      const res = await pageControl(tab.id!, 'press_key', [params.index ?? null, params.key])
       return resultFromResponse(res)
     }
 
     case 'hover': {
-      const tab = await getActiveTab()
-      const res = await send({
-        type: 'PAGE_CONTROL',
-        targetTabId: tab.id,
-        action: 'hover',
-        payload: [params.index],
-      })
+      const tab = await getTab()
+      const res = await pageControl(tab.id!, 'hover', [params.index])
       return resultFromResponse(res)
     }
 
     case 'focus': {
-      const tab = await getActiveTab()
-      const res = await send({
-        type: 'PAGE_CONTROL',
-        targetTabId: tab.id,
-        action: 'focus',
-        payload: [params.index],
-      })
+      const tab = await getTab()
+      const res = await pageControl(tab.id!, 'focus', [params.index])
       return resultFromResponse(res)
     }
 
     case 'scroll': {
-      const tab = await getActiveTab()
-      const res = await send({
-        type: 'PAGE_CONTROL',
-        targetTabId: tab.id,
-        action: 'scroll',
-        payload: {
-          direction: params.direction,
-          amount: params.amount,
-          pages: params.pages,
-          targetIndex: params.target_index,
-        },
+      const tab = await getTab()
+      const res = await pageControl(tab.id!, 'scroll', {
+        direction: params.direction,
+        amount: params.amount,
+        pages: params.pages,
+        targetIndex: params.target_index,
       })
       return resultFromResponse(res)
     }
 
+    // ─── Tab Management (direct Chrome API) ───────────────────
+
     case 'list_tabs': {
-      const tabs = await send({ type: 'TAB_LIST' })
-      if (tabs?.error) return err(tabs.error)
-      const list = tabs.map((t: any) => `[${t.id}] ${t.title} — ${t.url}`).join('\n')
-      return ok(list)
+      const tabs = await listTabs()
+      const list = tabs.map(t => `[${t.id}] ${t.title} — ${t.url}`).join('\n')
+      return ok(list || 'No tabs found')
     }
 
     case 'switch_tab': {
-      const res = await send({ type: 'TAB_SWITCH', tabId: params.tab_id })
+      const res = await switchToTab(params.tab_id as number)
       return resultFromResponse(res)
     }
 
     case 'new_tab': {
-      const res = await send({ type: 'TAB_OPEN', url: params.url as string })
+      const res = await openNewTab(params.url as string)
       return resultFromResponse(res)
     }
 
     case 'close_tab': {
-      const res = await send({ type: 'TAB_CLOSE', tabId: params.tab_id })
+      const res = await closeTab(params.tab_id as number)
       return resultFromResponse(res)
     }
 
     case 'navigate': {
-      const tab = await getActiveTab()
-      const res = await send({ type: 'TAB_NAVIGATE', url: params.url })
-      return resultFromResponse(res)
+      const tab = await getTab()
+      await chrome.tabs.update(tab.id!, { url: params.url as string })
+      await new Promise(r => setTimeout(r, 2000))
+      const updated = await chrome.tabs.get(tab.id!)
+      return ok(`✅ Navigated to: "${updated.title}" (${updated.url})`)
     }
 
     case 'go_back': {
-      const res = await send({ type: 'TAB_BACK' })
-      return resultFromResponse(res)
+      const tab = await getTab()
+      await chrome.tabs.goBack(tab.id!)
+      await new Promise(r => setTimeout(r, 1000))
+      const updated = await chrome.tabs.get(tab.id!)
+      return ok(`✅ Went back to: "${updated.title}" (${updated.url})`)
     }
 
     case 'go_forward': {
-      const res = await send({ type: 'TAB_FORWARD' })
-      return resultFromResponse(res)
+      const tab = await getTab()
+      await chrome.tabs.goForward(tab.id!)
+      await new Promise(r => setTimeout(r, 1000))
+      const updated = await chrome.tabs.get(tab.id!)
+      return ok(`✅ Went forward to: "${updated.title}" (${updated.url})`)
     }
 
     case 'reload': {
-      const tab = await getActiveTab()
-      const res = await send({ type: 'TAB_RELOAD', tabId: tab.id })
+      const tab = await getTab()
+      const res = await reloadTab(tab.id!)
       return resultFromResponse(res)
     }
 
+    // ─── Debug Tools ──────────────────────────────────────────
+
     case 'get_console_logs': {
-      const logs = await send({
-        type: 'DEBUG_GET_LOGS',
-        options: { limit: params.limit || 20, level: params.level },
+      const logs = await getConsoleLogs({
+        limit: params.limit as number || 20,
+        type: params.level as string,
       })
-      if (!logs?.length) return ok('No console logs captured. Use DEBUG_START_CAPTURE first.')
-      return ok(logs.map((l: any) => `[${l.level}] ${l.message}`).join('\n'))
+      if (!logs?.length) return ok('No console logs captured yet.')
+      return ok(logs.map((l: any) => `[${l.type}] ${l.args?.join(' ')}`).join('\n'))
     }
 
     case 'execute_script': {
-      const tab = await getActiveTab()
-      const res = await send({ type: 'DEBUG_EXECUTE_SCRIPT', tabId: tab.id, script: params.script })
-      return resultFromResponse(res)
-    }
-
-    case 'get_accessibility_summary': {
-      const tab = await getActiveTab()
-      const res = await send({ type: 'DEBUG_ACCESSIBILITY', tabId: tab.id })
-      return ok(JSON.stringify(res, null, 2))
+      const tab = await getTab()
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id! },
+          world: 'MAIN',
+          injectImmediately: true,
+          func: (code: string) => {
+            return new Promise<any>((resolve) => {
+              const channel = '__ariaEval_' + Date.now()
+              const handler = (e: MessageEvent) => {
+                if (e.data?.channel === channel) {
+                  window.removeEventListener('message', handler)
+                  resolve(e.data)
+                }
+              }
+              window.addEventListener('message', handler)
+              setTimeout(() => { window.removeEventListener('message', handler); resolve({ success: false, error: 'Timeout' }) }, 10000)
+              const scriptEl = document.createElement('script')
+              scriptEl.textContent = `(async function(){try{const r=await eval(${JSON.stringify(code)});window.postMessage({channel:'${channel}',success:true,result:r},'*')}catch(e){window.postMessage({channel:'${channel}',success:false,error:e.message},'*')}})()`
+              document.documentElement.appendChild(scriptEl); scriptEl.remove()
+            })
+          },
+          args: [params.script as string],
+        })
+        const result = results?.[0]?.result
+        if (result?.success) return ok(JSON.stringify(result.result, null, 2))
+        return err(result?.error || 'Script execution failed')
+      } catch (e: any) {
+        return err(e.message)
+      }
     }
 
     default:
@@ -408,13 +453,6 @@ export async function executeToolViaBackground(
 }
 
 // ─── Helpers ───
-
-async function getActiveTab(): Promise<chrome.tabs.Tab> {
-  // Use lastFocusedWindow:true — service workers don't have a "currentWindow"
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-  if (!tab) throw new Error('No active tab found')
-  return tab
-}
 
 function ok(text: string): ToolResult {
   return { content: [{ type: 'text', text }] }
@@ -425,6 +463,7 @@ function err(text: string): ToolResult {
 }
 
 function resultFromResponse(res: any): ToolResult {
+  if (!res) return err('No response from content script')
   if (res?.error) return err(res.error)
   if (res?.success === false) return err(res.message || 'Action failed')
   return ok(typeof res?.message === 'string' ? res.message : JSON.stringify(res))
