@@ -157,7 +157,9 @@ export class MCPBridgeClient {
   // ─── Send Messages ───
 
   registerTools(tools: ToolDefinition[]): void {
+    console.log('[MCPBridge] registerTools called, ws state:', this.ws?.readyState, 'OPEN:', WebSocket.OPEN)
     this.send({ type: 'registerTools', tools })
+    console.log('[MCPBridge] registerTools sent')
   }
 
   unregisterTools(names: string[]): void {
@@ -170,7 +172,10 @@ export class MCPBridgeClient {
 
   private send(msg: any): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
+      console.log('[MCPBridge] Sending:', msg.type)
       this.ws.send(JSON.stringify(msg))
+    } else {
+      console.log('[MCPBridge] send SKIPPED, ws state:', this.ws?.readyState)
     }
   }
 
