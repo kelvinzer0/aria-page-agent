@@ -503,60 +503,106 @@ export async function executeToolViaBackground(
         // chrome.scripting.executeScript itself failed → continue to fallback
       }
 
-      // ── Method 2: Direct execution via chrome.scripting.executeScript ──
-      // Fallback for strict CSP sites (Shopify, GitHub, etc.)
-      // Uses chrome.scripting.executeScript which bypasses script-src CSP
+      // ── Method 2: Execution via ISOLATED world ──
+      // The isolated world has its own CSP that doesn't restrict eval()/Function()
+      // chrome.scripting.executeScript with world='ISOLATED' runs in extension context
       try {
         const results = await chrome.scripting.executeScript({
           target: { tabId: tab.id! },
-          world: 'MAIN',
+          world: 'ISOLATED',
           injectImmediately: true,
           func: (code: string) => {
-            // chrome.scripting.executeScript bypasses CSP script-src
-            // But we still need to avoid eval() which is blocked by unsafe-eval
-            // Solution: Use Blob URL to create a script element that bypasses CSP
+            // In isolated world, we can use eval() freely
+            // But we need to execute in MAIN world context for page access
+            // Solution: Use chrome.scripting.executeScript again from isolated world
+            // to inject into MAIN world bypassing CSP
             return new Promise<any>((resolve) => {
-              const channel = '__ariaEval2_' + Date.now()
-              const timeout = setTimeout(() => {
-                window.removeEventListener('message', handler)
-                resolve({ success: false, error: 'Fallback timeout' })
-              }, 30000)
-              const handler = (e: MessageEvent) => {
-                if (e.data?.channel === channel) {
-                  window.removeEventListener('message', handler)
-                  clearTimeout(timeout)
-                  resolve(e.data)
-                }
-              }
-              window.addEventListener('message', handler)
-              try {
-                // Blob URL bypasses CSP script-src because it's a same-origin blob
-                const blob = new Blob([
-                  `(async function(){try{`,
-                  `const r=await(${code});`,
-                  `window.postMessage({channel:'${channel}',success:true,result:r},'*')`,
-                  `}catch(e){window.postMessage({channel:'${channel}',success:false,error:e.message},'*')}})()`
-                ], { type: 'text/javascript' })
-                const url = URL.createObjectURL(blob)
-                const scriptEl = document.createElement('script')
-                scriptEl.src = url
-                scriptEl.onload = () => {
-                  URL.revokeObjectURL(url)
-                  scriptEl.remove()
-                }
-                document.documentElement.appendChild(scriptEl)
-              } catch (blobError: any) {
-                window.removeEventListener('message', handler)
-                clearTimeout(timeout)
-                resolve({ success: false, error: blobError.message })
-              }
+              // Execute in MAIN world via nested chrome.scripting.executeScript
+              // The extension API itself bypasses CSP for script injection
+              chrome.scripting.executeScript({
+                target: { tabId: chrome.devtools?.inspectedWindow?.tabId || 0 },
+                world: 'MAIN',
+                injectImmediately: true,
+                func: (innerCode: string) => {
+                  // This runs in MAIN world
+                  // chrome.scripting.executeScript injection bypasses CSP
+                  // Use indirect eval which sometimes bypasses CSP
+                  const indirectEval = eval;
+                  return new Promise<any>((res) => {
+                    const ch = '__ariaIso_' + Date.now()
+                    const h = (e: MessageEvent) => {
+                      if (e.data?.channel === ch) {
+                        window.removeEventListener('message', h)
+                        res(e.data)
+                      }
+                    }
+                    window.addEventListener('message', h)
+                    setTimeout(() => { window.removeEventListener('message', h); res({ success: false, error: 'Isolated timeout' }) }, 30000)
+                    try {
+                      // Try indirect eval first (bypasses some CSP)
+                      const asyncFn = indirectEval('(async () => { ' + innerCode + ' })')
+                      asyncFn().then(
+                        (r: any) => window.postMessage({ channel: ch, success: true, result: r }, '*'),
+                        (e: any) => window.postMessage({ channel: ch, success: false, error: e.message }, '*')
+                      )
+                    } catch (evalErr: any) {
+                      window.postMessage({ channel: ch, success: false, error: evalErr.message }, '*')
+                    }
+                  })
+                },
+                args: [code],
+              }).then((scriptResults: any) => {
+                const r = scriptResults?.[0]?.result
+                resolve(r || { success: false, error: 'No result from MAIN world' })
+              }).catch((err: any) => {
+                resolve({ success: false, error: err.message })
+              })
             })
           },
           args: [code],
         })
         const result = results?.[0]?.result
         if (result?.success) return ok(JSON.stringify(result.result, null, 2))
-        return err(result?.error || 'Script execution failed (both methods)')
+        // If isolated world also failed, try one more approach
+      } catch (e: any) {
+        // Continue to Method 3
+      }
+
+      // ── Method 3: Direct chrome.scripting.executeScript with func return ──
+      // Simplest approach - just run the code directly via the extension API
+      // The func itself runs in MAIN world, but the injection is CSP-bypassed
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id! },
+          world: 'MAIN',
+          injectImmediately: true,
+          func: (code: string) => {
+            // Direct execution - the injection itself bypasses CSP
+            // We wrap in async and use postMessage for async results
+            return new Promise<any>((resolve) => {
+              const ch = '__ariaDirect_' + Date.now()
+              const h = (e: MessageEvent) => {
+                if (e.data?.channel === ch) {
+                  window.removeEventListener('message', h)
+                  resolve(e.data)
+                }
+              }
+              window.addEventListener('message', h)
+              setTimeout(() => { window.removeEventListener('message', h); resolve({ success: false, error: 'Direct timeout' }) }, 30000)
+              // Use document.createElement('script') with nonce if available
+              const nonce = document.querySelector('script[nonce]')?.getAttribute('nonce') || ''
+              const scriptEl = document.createElement('script')
+              if (nonce) scriptEl.setAttribute('nonce', nonce)
+              scriptEl.textContent = `(async function(){try{const r=await(${code});window.postMessage({channel:'${ch}',success:true,result:r},'*')}catch(e){window.postMessage({channel:'${ch}',success:false,error:e.message},'*')}})()`
+              document.documentElement.appendChild(scriptEl)
+              scriptEl.remove()
+            })
+          },
+          args: [code],
+        })
+        const result = results?.[0]?.result
+        if (result?.success) return ok(JSON.stringify(result.result, null, 2))
+        return err(result?.error || 'All execution methods failed')
       } catch (e: any) {
         return err(`Script execution failed: ${e.message}`)
       }
