@@ -7,7 +7,7 @@ export default defineConfig({
     name: 'Aria Page Agent',
     description: 'LLM browser agent that sees the web like a screen reader - powered by ARIA Accessibility Object Model',
     version: '1.0.0',
-    permissions: ['activeTab', 'storage', 'tabs', 'scripting', 'sidePanel'],
+    permissions: ['activeTab', 'storage', 'tabs', 'scripting', 'sidePanel', 'debugger'],
     host_permissions: ['<all_urls>'],
     action: {
       default_title: 'Aria Page Agent',
@@ -24,9 +24,6 @@ export default defineConfig({
     ],
     background: {
       service_worker: 'background.ts',
-    },
-    content_security_policy: {
-      content_scripts: "script-src 'self' 'unsafe-eval'; object-src 'self';"
     },
   },
 })

@@ -460,68 +460,64 @@ export async function executeToolViaBackground(
       const SCRIPT_TIMEOUT = 30000
 
       // ═══════════════════════════════════════════════════════════════
-      // ISOLATED + MAIN RPC Pattern (Recommended)
-      // ═══════════════════════════════════════════════════════════════
-      // ISOLATED world: no page CSP, can eval() freely
-      // MAIN world: has page CSP, only predefined functions
-      // Communication: postMessage bridge
-      //
-      // Flow:
-      // 1. ISOLATED eval(code) → gets result
-      // 2. ISOLATED posts result to MAIN via postMessage
-      // 3. MAIN forwards result back to ISOLATED
+      // Method 1: chrome.debugger + Runtime.evaluate
+      // Bypasses CSP completely — not part of rendering pipeline
+      // Trade-off: shows yellow "debugging" banner
       // ═══════════════════════════════════════════════════════════════
       try {
-        const results = await chrome.scripting.executeScript({
-          target: { tabId: tab.id! },
-          world: 'ISOLATED',
-          injectImmediately: true,
-          func: (code: string, timeout: number) => {
-            // This runs in ISOLATED world — no page CSP
-            return new Promise<any>((resolve) => {
-              const ch = '__ariaRPC_' + Date.now()
-              const timer = setTimeout(() => resolve({ success: false, error: 'RPC timeout' }), timeout)
+        const debuggee = { tabId: tab.id! }
+        const protocolVersion = '1.3'
 
-              // Listen for result from MAIN world
-              const handler = (e: MessageEvent) => {
-                if (e.data?.channel === ch && e.data?.__ariaRPC) {
-                  window.removeEventListener('message', handler)
-                  clearTimeout(timer)
-                  resolve(e.data)
-                }
-              }
-              window.addEventListener('message', handler)
-
-              // Execute code in ISOLATED world (eval is allowed here)
-              try {
-                const asyncCode = `(async () => { ${code} })()`
-                const evalResult = eval(asyncCode)
-
-                if (evalResult && typeof evalResult.then === 'function') {
-                  evalResult.then(
-                    (r: any) => {
-                      window.postMessage({ channel: ch, __ariaRPC: true, success: true, result: r }, '*')
-                    },
-                    (e: any) => {
-                      window.postMessage({ channel: ch, __ariaRPC: true, success: false, error: e.message || String(e) }, '*')
-                    }
-                  )
-                } else {
-                  window.postMessage({ channel: ch, __ariaRPC: true, success: true, result: evalResult }, '*')
-                }
-              } catch (evalErr: any) {
-                window.removeEventListener('message', handler)
-                clearTimeout(timer)
-                resolve({ success: false, error: evalErr.message || String(evalErr) })
-              }
-            })
-          },
-          args: [code, SCRIPT_TIMEOUT],
+        // Attach debugger
+        await new Promise<void>((resolve, reject) => {
+          chrome.debugger.attach(debuggee, protocolVersion, () => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message))
+            } else {
+              resolve()
+            }
+          })
         })
-        const result = results?.[0]?.result
-        if (result?.success) return ok(JSON.stringify(result.result, null, 2))
-        return err(result?.error || 'Script execution failed')
+
+        // Wrap code in async IIFE and evaluate
+        const wrappedCode = `(async () => { ${code} })()`
+
+        // Send Runtime.evaluate
+        const result = await new Promise<any>((resolve, reject) => {
+          chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+            expression: wrappedCode,
+            awaitPromise: true,
+            returnByValue: true,
+            timeout: SCRIPT_TIMEOUT,
+          }, (result) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message))
+            } else {
+              resolve(result)
+            }
+          })
+        })
+
+        // Detach debugger
+        chrome.debugger.detach(debuggee)
+
+        // Parse result
+        if (result?.result?.type === 'undefined') {
+          return ok('undefined')
+        }
+        if (result?.result?.subtype === 'error') {
+          return err(result.result.description || 'Script error')
+        }
+        if (result?.exceptionDetails) {
+          return err(result.exceptionDetails.text || result.exceptionDetails.exception?.description || 'Exception')
+        }
+        if (result?.result?.value !== undefined) {
+          return ok(JSON.stringify(result.result.value, null, 2))
+        }
+        return ok(JSON.stringify(result?.result, null, 2))
       } catch (e: any) {
+        // Detach on error
+        try { chrome.debugger.detach({ tabId: tab.id! }) } catch {}
         return err(`Script execution failed: ${e.message}`)
       }
     }
