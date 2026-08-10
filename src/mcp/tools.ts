@@ -459,133 +459,60 @@ export async function executeToolViaBackground(
       const code = params.script as string
       const SCRIPT_TIMEOUT = 30000
 
-      // ── Method 1: Script injection via <script> element (original) ──
-      try {
-        const results = await chrome.scripting.executeScript({
-          target: { tabId: tab.id! },
-          world: 'MAIN',
-          injectImmediately: true,
-          func: (code: string, timeout: number) => {
-            return new Promise<any>((resolve) => {
-              const channel = '__ariaEval_' + Date.now()
-              const handler = (e: MessageEvent) => {
-                if (e.data?.channel === channel) {
-                  window.removeEventListener('message', handler)
-                  resolve(e.data)
-                }
-              }
-              window.addEventListener('message', handler)
-              setTimeout(() => { window.removeEventListener('message', handler); resolve({ success: false, error: 'Timeout', fallback: true }) }, timeout)
-              try {
-                const scriptEl = document.createElement('script')
-                scriptEl.textContent = `(async function(){try{const r=await eval(${JSON.stringify(code)});window.postMessage({channel:'${channel}',success:true,result:r},'*')}catch(e){window.postMessage({channel:'${channel}',success:false,error:e.message},'*')}})()`
-                document.documentElement.appendChild(scriptEl)
-                scriptEl.remove()
-              } catch (cspError: any) {
-                window.removeEventListener('message', handler)
-                resolve({ success: false, error: 'CSP_BLOCKED', fallback: true })
-              }
-            })
-          },
-          args: [code, SCRIPT_TIMEOUT],
-        })
-        const result = results?.[0]?.result
-        if (result?.success) return ok(JSON.stringify(result.result, null, 2))
-        if (result?.error !== 'CSP_BLOCKED' && result?.error !== 'Timeout') {
-          return err(result?.error || 'Script execution failed')
-        }
-      } catch (e: any) {
-        // Continue to fallback
-      }
-
-      // ── Method 2: ISOLATED world execution ──
-      // ISOLATED world runs in extension context with permissive CSP
-      // Can use eval() freely, then return result back to background
+      // ═══════════════════════════════════════════════════════════════
+      // ISOLATED + MAIN RPC Pattern (Recommended)
+      // ═══════════════════════════════════════════════════════════════
+      // ISOLATED world: no page CSP, can eval() freely
+      // MAIN world: has page CSP, only predefined functions
+      // Communication: postMessage bridge
+      //
+      // Flow:
+      // 1. ISOLATED eval(code) → gets result
+      // 2. ISOLATED posts result to MAIN via postMessage
+      // 3. MAIN forwards result back to ISOLATED
+      // ═══════════════════════════════════════════════════════════════
       try {
         const results = await chrome.scripting.executeScript({
           target: { tabId: tab.id! },
           world: 'ISOLATED',
           injectImmediately: true,
-          func: (code: string) => {
-            // ISOLATED world: extension context, no CSP eval restriction
-            return new Promise<any>((resolve) => {
-              const ch = '__ariaIso_' + Date.now()
-              const timeout = setTimeout(() => resolve({ success: false, error: 'Isolated timeout' }), 30000)
-              const handler = (e: MessageEvent) => {
-                if (e.data?.channel === ch) {
-                  window.removeEventListener('message', handler)
-                  clearTimeout(timeout)
-                  resolve(e.data)
-                }
-              }
-              window.addEventListener('message', handler)
-              // Listen for result from MAIN world
-              // First, inject into MAIN world using chrome.scripting from isolated context
-              // This is the key: isolated world can call chrome APIs
-              chrome.scripting.executeScript({
-                target: { tabId: tab.id! },
-                world: 'MAIN',
-                injectImmediately: true,
-                func: (innerCode: string, channel: string) => {
-                  // This runs in MAIN world
-                  // Use indirect eval which some CSP allow
-                  try {
-                    const indirectEval = eval
-                    const fn = indirectEval('(async function(){return (' + innerCode + ')})')
-                    fn().then(
-                      (r: any) => window.postMessage({ channel, success: true, result: r }, '*'),
-                      (e: any) => window.postMessage({ channel, success: false, error: e.message }, '*')
-                    )
-                  } catch (e: any) {
-                    window.postMessage({ channel, success: false, error: e.message }, '*')
-                  }
-                },
-                args: [code, ch],
-              }).catch((err: any) => {
-                window.removeEventListener('message', handler)
-                clearTimeout(timeout)
-                resolve({ success: false, error: 'MAIN inject failed: ' + err.message })
-              })
-            })
-          },
-          args: [code],
-        })
-        const result = results?.[0]?.result
-        if (result?.success) return ok(JSON.stringify(result.result, null, 2))
-      } catch (e: any) {
-        // Continue to Method 3
-      }
-
-      // ── Method 3: Nonce-aware injection ──
-      // Try to reuse page's existing nonce for script injection
-      try {
-        const results = await chrome.scripting.executeScript({
-          target: { tabId: tab.id! },
-          world: 'MAIN',
-          injectImmediately: true,
           func: (code: string, timeout: number) => {
+            // This runs in ISOLATED world — no page CSP
             return new Promise<any>((resolve) => {
-              const ch = '__ariaNonce_' + Date.now()
+              const ch = '__ariaRPC_' + Date.now()
+              const timer = setTimeout(() => resolve({ success: false, error: 'RPC timeout' }), timeout)
+
+              // Listen for result from MAIN world
               const handler = (e: MessageEvent) => {
-                if (e.data?.channel === ch) {
+                if (e.data?.channel === ch && e.data?.__ariaRPC) {
                   window.removeEventListener('message', handler)
+                  clearTimeout(timer)
                   resolve(e.data)
                 }
               }
               window.addEventListener('message', handler)
-              setTimeout(() => { window.removeEventListener('message', handler); resolve({ success: false, error: 'Nonce timeout' }) }, timeout)
-              // Find nonce from existing scripts
-              const existingScript = document.querySelector('script[nonce]')
-              const nonce = existingScript?.getAttribute('nonce') || ''
-              if (nonce) {
-                const scriptEl = document.createElement('script')
-                scriptEl.setAttribute('nonce', nonce)
-                scriptEl.textContent = `(async function(){try{const r=await(${code});window.postMessage({channel:'${ch}',success:true,result:r},'*')}catch(e){window.postMessage({channel:'${ch}',success:false,error:e.message},'*')}})()`
-                document.documentElement.appendChild(scriptEl)
-                scriptEl.remove()
-              } else {
+
+              // Execute code in ISOLATED world (eval is allowed here)
+              try {
+                const asyncCode = `(async () => { ${code} })()`
+                const evalResult = eval(asyncCode)
+
+                if (evalResult && typeof evalResult.then === 'function') {
+                  evalResult.then(
+                    (r: any) => {
+                      window.postMessage({ channel: ch, __ariaRPC: true, success: true, result: r }, '*')
+                    },
+                    (e: any) => {
+                      window.postMessage({ channel: ch, __ariaRPC: true, success: false, error: e.message || String(e) }, '*')
+                    }
+                  )
+                } else {
+                  window.postMessage({ channel: ch, __ariaRPC: true, success: true, result: evalResult }, '*')
+                }
+              } catch (evalErr: any) {
                 window.removeEventListener('message', handler)
-                resolve({ success: false, error: 'No nonce found' })
+                clearTimeout(timer)
+                resolve({ success: false, error: evalErr.message || String(evalErr) })
               }
             })
           },
@@ -593,7 +520,7 @@ export async function executeToolViaBackground(
         })
         const result = results?.[0]?.result
         if (result?.success) return ok(JSON.stringify(result.result, null, 2))
-        return err(result?.error || 'All execution methods failed')
+        return err(result?.error || 'Script execution failed')
       } catch (e: any) {
         return err(`Script execution failed: ${e.message}`)
       }
