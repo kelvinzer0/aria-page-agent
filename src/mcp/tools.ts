@@ -456,12 +456,17 @@ export async function executeToolViaBackground(
 
     case 'execute_script': {
       const tab = await getTab()
+      const code = params.script as string
+      const SCRIPT_TIMEOUT = 30000 // 30s (increased from 10s)
+
+      // ── Method 1: Script injection via <script> element ──
+      // Works on most sites, respects page's JS context fully
       try {
         const results = await chrome.scripting.executeScript({
           target: { tabId: tab.id! },
           world: 'MAIN',
           injectImmediately: true,
-          func: (code: string) => {
+          func: (code: string, timeout: number) => {
             return new Promise<any>((resolve) => {
               const channel = '__ariaEval_' + Date.now()
               const handler = (e: MessageEvent) => {
@@ -471,19 +476,68 @@ export async function executeToolViaBackground(
                 }
               }
               window.addEventListener('message', handler)
-              setTimeout(() => { window.removeEventListener('message', handler); resolve({ success: false, error: 'Timeout' }) }, 10000)
-              const scriptEl = document.createElement('script')
-              scriptEl.textContent = `(async function(){try{const r=await eval(${JSON.stringify(code)});window.postMessage({channel:'${channel}',success:true,result:r},'*')}catch(e){window.postMessage({channel:'${channel}',success:false,error:e.message},'*')}})()`
-              document.documentElement.appendChild(scriptEl); scriptEl.remove()
+              setTimeout(() => { window.removeEventListener('message', handler); resolve({ success: false, error: 'Timeout', fallback: true }) }, timeout)
+              try {
+                const scriptEl = document.createElement('script')
+                scriptEl.textContent = `(async function(){try{const r=await eval(${JSON.stringify(code)});window.postMessage({channel:'${channel}',success:true,result:r},'*')}catch(e){window.postMessage({channel:'${channel}',success:false,error:e.message},'*')}})()`
+                document.documentElement.appendChild(scriptEl)
+                scriptEl.remove()
+              } catch (cspError: any) {
+                // CSP blocked script element creation
+                window.removeEventListener('message', handler)
+                resolve({ success: false, error: 'CSP_BLOCKED', fallback: true })
+              }
             })
           },
-          args: [params.script as string],
+          args: [code, SCRIPT_TIMEOUT],
+        })
+        const result = results?.[0]?.result
+        // If script injection worked, return result
+        if (result?.success) return ok(JSON.stringify(result.result, null, 2))
+        // If error is NOT CSP_BLOCKED, return the error (no fallback needed)
+        if (result?.error !== 'CSP_BLOCKED' && result?.error !== 'Timeout') {
+          return err(result?.error || 'Script execution failed')
+        }
+        // CSP blocked or timeout → continue to fallback
+      } catch (e: any) {
+        // chrome.scripting.executeScript itself failed → continue to fallback
+      }
+
+      // ── Method 2: Direct execution via chrome.scripting.executeScript ──
+      // Fallback for strict CSP sites (Shopify, GitHub, etc.)
+      // This bypasses CSP because chrome.scripting.executeScript is a privileged API
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id! },
+          world: 'MAIN',
+          injectImmediately: true,
+          func: (code: string) => {
+            return new Promise<any>((resolve) => {
+              // Use Function constructor instead of eval to avoid CSP eval restrictions
+              // chrome.scripting.executeScript already bypasses script-src, but eval() may still be blocked
+              try {
+                const asyncFn = new Function('return (async () => { ' + code + ' })()')
+                const result = asyncFn()
+                if (result && typeof result.then === 'function') {
+                  result.then(
+                    (r: any) => resolve({ success: true, result: r }),
+                    (e: any) => resolve({ success: false, error: e.message || String(e) })
+                  )
+                } else {
+                  resolve({ success: true, result })
+                }
+              } catch (e: any) {
+                resolve({ success: false, error: e.message || String(e) })
+              }
+            })
+          },
+          args: [code],
         })
         const result = results?.[0]?.result
         if (result?.success) return ok(JSON.stringify(result.result, null, 2))
-        return err(result?.error || 'Script execution failed')
+        return err(result?.error || 'Script execution failed (both methods)')
       } catch (e: any) {
-        return err(e.message)
+        return err(`Script execution failed: ${e.message}`)
       }
     }
 
