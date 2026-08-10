@@ -26,7 +26,8 @@ export default defineConfig({
       service_worker: 'background.ts',
     },
     content_security_policy: {
-      extension_pages: "script-src 'self' 'unsafe-eval'; object-src 'self';"
+      extension_pages: "script-src 'self' 'unsafe-eval'; object-src 'self';",
+      content_scripts: "script-src 'self' 'unsafe-eval'; object-src 'self';"
     },
   },
 })
