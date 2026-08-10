@@ -505,29 +505,50 @@ export async function executeToolViaBackground(
 
       // ── Method 2: Direct execution via chrome.scripting.executeScript ──
       // Fallback for strict CSP sites (Shopify, GitHub, etc.)
-      // This bypasses CSP because chrome.scripting.executeScript is a privileged API
+      // Uses chrome.scripting.executeScript which bypasses script-src CSP
       try {
         const results = await chrome.scripting.executeScript({
           target: { tabId: tab.id! },
           world: 'MAIN',
           injectImmediately: true,
           func: (code: string) => {
+            // chrome.scripting.executeScript bypasses CSP script-src
+            // But we still need to avoid eval() which is blocked by unsafe-eval
+            // Solution: Use Blob URL to create a script element that bypasses CSP
             return new Promise<any>((resolve) => {
-              // Use Function constructor instead of eval to avoid CSP eval restrictions
-              // chrome.scripting.executeScript already bypasses script-src, but eval() may still be blocked
-              try {
-                const asyncFn = new Function('return (async () => { ' + code + ' })()')
-                const result = asyncFn()
-                if (result && typeof result.then === 'function') {
-                  result.then(
-                    (r: any) => resolve({ success: true, result: r }),
-                    (e: any) => resolve({ success: false, error: e.message || String(e) })
-                  )
-                } else {
-                  resolve({ success: true, result })
+              const channel = '__ariaEval2_' + Date.now()
+              const timeout = setTimeout(() => {
+                window.removeEventListener('message', handler)
+                resolve({ success: false, error: 'Fallback timeout' })
+              }, 30000)
+              const handler = (e: MessageEvent) => {
+                if (e.data?.channel === channel) {
+                  window.removeEventListener('message', handler)
+                  clearTimeout(timeout)
+                  resolve(e.data)
                 }
-              } catch (e: any) {
-                resolve({ success: false, error: e.message || String(e) })
+              }
+              window.addEventListener('message', handler)
+              try {
+                // Blob URL bypasses CSP script-src because it's a same-origin blob
+                const blob = new Blob([
+                  `(async function(){try{`,
+                  `const r=await(${code});`,
+                  `window.postMessage({channel:'${channel}',success:true,result:r},'*')`,
+                  `}catch(e){window.postMessage({channel:'${channel}',success:false,error:e.message},'*')}})()`
+                ], { type: 'text/javascript' })
+                const url = URL.createObjectURL(blob)
+                const scriptEl = document.createElement('script')
+                scriptEl.src = url
+                scriptEl.onload = () => {
+                  URL.revokeObjectURL(url)
+                  scriptEl.remove()
+                }
+                document.documentElement.appendChild(scriptEl)
+              } catch (blobError: any) {
+                window.removeEventListener('message', handler)
+                clearTimeout(timeout)
+                resolve({ success: false, error: blobError.message })
               }
             })
           },
