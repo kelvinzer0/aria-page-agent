@@ -485,10 +485,6 @@ export async function executeToolViaBackground(
           })
         })
 
-        // Wrap code in async IIFE with explicit return
-        // e.g. "document.title" → "return document.title" inside the function body
-        const wrappedCode = `(async () => { return (${code}) })()`
-
         // Schedule termination for blocking scripts (infinite loops etc.)
         // CDP timeout param doesn't interrupt sync code, so we use terminateExecution.
         const terminateTimer = setTimeout(() => {
@@ -497,10 +493,16 @@ export async function executeToolViaBackground(
           }).catch(() => {})
         }, SCRIPT_TIMEOUT)
 
-        // Send Runtime.evaluate
+        // Use Runtime.callFunctionOn to execute code as a function body.
+        // Unlike Runtime.evaluate with `return (${code})`, this handles BOTH:
+        //   - Expressions: document.title → returns "Example Domain"
+        //   - Statements:  const x = 1; x  → returns 1
+        //   - while(true)  → no syntax error (can be terminated)
+        //   - throw        → no syntax error (caught as exception)
         const result = await new Promise<any>((resolve, reject) => {
-          chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
-            expression: wrappedCode,
+          chrome.debugger.sendCommand(debuggee, 'Runtime.callFunctionOn', {
+            objectId: '0',  // globalThis
+            functionDeclaration: `async function() { ${code} }`,
             awaitPromise: true,
             returnByValue: true,
           }, (result) => {
