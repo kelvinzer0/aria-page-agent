@@ -499,9 +499,27 @@ export async function executeToolViaBackground(
         //   - Statements:  const x = 1; x  → returns 1
         //   - while(true)  → no syntax error (can be terminated)
         //   - throw        → no syntax error (caught as exception)
+
+        // Step 1: Get globalThis objectId via Runtime.evaluate
+        const globalObj = await new Promise<any>((resolve, reject) => {
+          chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+            expression: 'globalThis',
+            returnByValue: false,
+          }, (result) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message))
+            } else {
+              resolve(result)
+            }
+          })
+        })
+        const globalObjectId = globalObj?.result?.objectId
+        if (!globalObjectId) throw new Error('Could not get globalThis objectId')
+
+        // Step 2: callFunctionOn with globalThis as context
         const result = await new Promise<any>((resolve, reject) => {
           chrome.debugger.sendCommand(debuggee, 'Runtime.callFunctionOn', {
-            objectId: '0',  // globalThis
+            objectId: globalObjectId,
             functionDeclaration: `async function() { ${code} }`,
             awaitPromise: true,
             returnByValue: true,
