@@ -522,7 +522,10 @@ export async function executeToolViaBackground(
         // e.g. "document.title" → "return document.title" → "Google"
         // But "const x = 1" → no return (would be SyntaxError)
         const statementRe = /^\s*(const|let|var|if|while|for|do|function|class|try|switch|throw|return|async|await|import|export|debugger|with)\b/
-        const needsReturn = !statementRe.test(code)
+        // Multi-statement code (contains ;) or starts with a statement keyword
+        // → don't add return (would be SyntaxError)
+        const isStatement = statementRe.test(code) || /;/.test(code)
+        const needsReturn = !isStatement
         const fnBody = needsReturn ? `return (${code})` : code
         const result = await new Promise<any>((resolve, reject) => {
           chrome.debugger.sendCommand(debuggee, 'Runtime.callFunctionOn', {
