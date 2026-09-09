@@ -94,7 +94,7 @@ export async function closeTab(tabId: number): Promise<{ success: boolean; messa
 }
 
 // ─── Navigate to URL ───
-export async function navigateTo(url: number | string): Promise<{ success: boolean; message: string }> {
+export async function navigateTo(url: string): Promise<{ success: boolean; message: string }> {
   try {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
     if (!tab?.id) return { success: false, message: 'No active tab' }

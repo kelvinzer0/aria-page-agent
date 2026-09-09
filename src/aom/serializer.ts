@@ -88,7 +88,7 @@ function headingLevel(el: AomElement): number | undefined {
     return parseInt(el.htmlTag[1])
   }
   // From aria-level
-  return el.attributes.ariaRowIndex || undefined
+  return el.attributes.ariaLevel || undefined
 }
 
 // ─── Render Single Element ───

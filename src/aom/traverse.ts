@@ -132,6 +132,7 @@ function readAttributes(el: HTMLElement): AriaAttributes {
     ariaValueText: g('aria-valuetext'),
     ariaSetSize: gNum('aria-setsize'),
     ariaPosInSet: gNum('aria-posinset'),
+    ariaLevel: gNum('aria-level'),
     ariaRowIndex: gNum('aria-rowindex'),
     ariaColIndex: gNum('aria-colindex'),
     ariaRowSpan: gNum('aria-rowspan'),
@@ -179,7 +180,7 @@ function computeMappedRole(el: HTMLElement): { role: AriaRole; extra?: Partial<A
   if (tag === 'footer') return isRootLandmark({ htmlTag: tag } as any) ? { role: 'contentinfo' } : null
 
   if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag)) {
-    return { role: 'heading', extra: { ariaRowIndex: undefined, ariaColIndex: undefined } }
+    return { role: 'heading', extra: { ariaLevel: parseInt(tag[1]) } }
   }
 
   if (tag === 'a' || tag === 'area') {

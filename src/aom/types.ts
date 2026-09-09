@@ -101,6 +101,9 @@ export interface AriaAttributes {
   ariaSetSize?: number
   ariaPosInSet?: number
 
+  // Heading
+  ariaLevel?: number
+
   // Table
   ariaRowIndex?: number
   ariaColIndex?: number
