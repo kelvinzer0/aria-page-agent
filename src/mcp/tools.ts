@@ -516,11 +516,18 @@ export async function executeToolViaBackground(
         const globalObjectId = globalObj?.result?.objectId
         if (!globalObjectId) throw new Error('Could not get globalThis objectId')
 
-        // Step 2: callFunctionOn with globalThis as context
+        // Step 2: callFunctionOn with globalThis as context.
+        // If code is a pure expression (not starting with a statement keyword),
+        // add 'return' so the value is captured.
+        // e.g. "document.title" → "return document.title" → "Google"
+        // But "const x = 1" → no return (would be SyntaxError)
+        const statementRe = /^\s*(const|let|var|if|while|for|do|function|class|try|switch|throw|return|async|await|import|export|debugger|with)\b/
+        const needsReturn = !statementRe.test(code)
+        const fnBody = needsReturn ? `return (${code})` : code
         const result = await new Promise<any>((resolve, reject) => {
           chrome.debugger.sendCommand(debuggee, 'Runtime.callFunctionOn', {
             objectId: globalObjectId,
-            functionDeclaration: `async function() { ${code} }`,
+            functionDeclaration: `async function() { ${fnBody} }`,
             awaitPromise: true,
             returnByValue: true,
           }, (result) => {
