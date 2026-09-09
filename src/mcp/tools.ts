@@ -413,7 +413,17 @@ export async function executeToolViaBackground(
     case 'navigate': {
       const tab = await getTab()
       const extraWait = Math.min((params.wait_ms as number) || 1500, 10000)
-      await chrome.tabs.update(tab.id!, { url: params.url as string })
+      const url = params.url as string
+      // Validate URL — reject invalid URLs that would create chrome-extension:// navigations
+      try {
+        const parsed = new URL(url)
+        if (!['http:', 'https:', 'file:', 'data:'].includes(parsed.protocol)) {
+          return err(`Unsupported protocol: ${parsed.protocol}. Use http:// or https://`)
+        }
+      } catch {
+        return err(`Invalid URL: "${url}". Include protocol (https://...)`)
+      }
+      await chrome.tabs.update(tab.id!, { url })
       const updated = await waitForTabLoad(tab.id!, 10000)
       await new Promise(r => setTimeout(r, extraWait))
       return ok(`✅ Navigated to: "${updated.title}" (${updated.url})`)
@@ -459,61 +469,71 @@ export async function executeToolViaBackground(
       const code = params.script as string
       const SCRIPT_TIMEOUT = 30000
 
+      // chrome.debugger + Runtime.evaluate — bypasses CSP completely
       try {
-        // Use chrome.scripting.executeScript with MAIN world
-        // This avoids the debugger yellow banner and handles sync blocking code properly
-        const results = await chrome.scripting.executeScript({
-          target: { tabId: tab.id! },
-          world: 'MAIN',
-          injectImmediately: true,
-          func: (src: string, timeout: number) => {
-            return new Promise<any>((resolve) => {
-              const channel = '__ariaEval_' + Math.random().toString(36).slice(2)
-              const handler = (e: MessageEvent) => {
-                if (e.data?.channel === channel) {
-                  window.removeEventListener('message', handler)
-                  resolve(e.data)
-                }
-              }
-              window.addEventListener('message', handler)
+        const debuggee = { tabId: tab.id! }
+        const protocolVersion = '1.3'
 
-              // Timeout — handles infinite loops and hung scripts
-              setTimeout(() => {
-                window.removeEventListener('message', handler)
-                resolve({ success: false, error: `Script execution timed out after ${timeout}ms` })
-              }, timeout)
-
-              // Inject via script element — runs in page JS context, bypasses CSP
-              const scriptEl = document.createElement('script')
-              // Use try/catch + explicit return for expressions
-              scriptEl.textContent = `
-                (async function() {
-                  try {
-                    const __fn = async () => { ${src} };
-                    const __result = await __fn();
-                    window.postMessage({ channel: '${channel}', success: true, result: __result }, '*');
-                  } catch (err) {
-                    window.postMessage({ channel: '${channel}', success: false, error: String(err) }, '*');
-                  }
-                })();
-              `
-              document.documentElement.appendChild(scriptEl)
-              scriptEl.remove()
-            })
-          },
-          args: [code, SCRIPT_TIMEOUT],
+        // Attach debugger
+        await new Promise<void>((resolve, reject) => {
+          chrome.debugger.attach(debuggee, protocolVersion, () => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message))
+            } else {
+              resolve()
+            }
+          })
         })
 
-        const result = results?.[0]?.result
-        if (result?.success) {
-          const val = result.result
-          if (val === undefined || val === null) return ok(String(val))
-          if (typeof val === 'object') return ok(JSON.stringify(val, null, 2))
-          return ok(String(val))
-        } else {
-          return err(result?.error || 'Script execution failed')
+        // Wrap code in async IIFE with explicit return
+        // e.g. "document.title" → "return document.title" inside the function body
+        const wrappedCode = `(async () => { return (${code}) })()`
+
+        // Schedule termination for blocking scripts (infinite loops etc.)
+        // CDP timeout param doesn't interrupt sync code, so we use terminateExecution.
+        const terminateTimer = setTimeout(() => {
+          chrome.debugger.sendCommand(debuggee, 'Runtime.terminateExecution', {
+            reason: `Script execution timed out after ${SCRIPT_TIMEOUT}ms`
+          }).catch(() => {})
+        }, SCRIPT_TIMEOUT)
+
+        // Send Runtime.evaluate
+        const result = await new Promise<any>((resolve, reject) => {
+          chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+            expression: wrappedCode,
+            awaitPromise: true,
+            returnByValue: true,
+          }, (result) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message))
+            } else {
+              resolve(result)
+            }
+          })
+        })
+
+        clearTimeout(terminateTimer)
+
+        // Detach debugger
+        chrome.debugger.detach(debuggee)
+
+        // Parse result
+        if (result?.result?.type === 'undefined') {
+          return ok('undefined')
         }
+        if (result?.result?.subtype === 'error') {
+          return err(result.result.description || 'Script error')
+        }
+        if (result?.exceptionDetails) {
+          return err(result.exceptionDetails.text || result.exceptionDetails.exception?.description || 'Exception')
+        }
+        if (result?.result?.value !== undefined) {
+          return ok(JSON.stringify(result.result.value, null, 2))
+        }
+        return ok(JSON.stringify(result?.result, null, 2))
       } catch (e: any) {
+        // Detach on error
+        try { chrome.debugger.detach({ tabId: tab.id! }) } catch {}
         return err(`Script execution failed: ${e.message}`)
       }
     }
