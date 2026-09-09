@@ -210,9 +210,20 @@ export async function pressKey(index: number | null, key: string): Promise<Actio
   }
 
   try {
+    // Build correct code for the key
+    const keyToCode: Record<string, string> = {
+      'Enter': 'Enter', 'Escape': 'Escape', 'Tab': 'Tab',
+      'Backspace': 'Backspace', 'Delete': 'Delete',
+      'ArrowUp': 'ArrowUp', 'ArrowDown': 'ArrowDown',
+      'ArrowLeft': 'ArrowLeft', 'ArrowRight': 'ArrowRight',
+      'Home': 'Home', 'End': 'End', 'PageUp': 'PageUp', 'PageDown': 'PageDown',
+      ' ': 'Space',
+    }
+    const code = keyToCode[key] ?? (key.length === 1 ? `Key${key.toUpperCase()}` : key)
+
     const keyEvent = {
       key,
-      code: `Key${key.toUpperCase()}`,
+      code,
       bubbles: true,
       cancelable: true,
     }
@@ -224,6 +235,17 @@ export async function pressKey(index: number | null, key: string): Promise<Actio
     // Special keys
     if (key === 'Enter' && target instanceof HTMLAnchorElement) {
       target.click()
+    }
+    if (key === 'Tab') {
+      const focusable = document.querySelectorAll<HTMLElement>(
+        'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      )
+      const arr = Array.from(focusable)
+      const idx = arr.indexOf(target as HTMLElement)
+      if (idx >= 0) {
+        const next = arr[idx + 1]
+        next?.focus()
+      }
     }
 
     return { success: true, message: `✅ Pressed "${key}" on ${index !== null ? `[${index}]` : 'focused element'}` }
@@ -268,7 +290,30 @@ export async function focusElement(index: number): Promise<ActionResult> {
   try {
     el.domNode.scrollIntoView({ behavior: 'smooth', block: 'center' })
     await sleep(100)
-    ;(el.domNode as HTMLElement).focus()
+
+    const domNode = el.domNode as HTMLElement
+    const hadTabIndex = domNode.hasAttribute('tabindex')
+    const origTabIndex = domNode.getAttribute('tabindex')
+
+    // If element is not natively focusable, add tabindex temporarily
+    if (!hadTabIndex && typeof domNode.focus === 'function') {
+      try { domNode.focus() } catch {}
+      if (document.activeElement !== domNode) {
+        domNode.setAttribute('tabindex', '-1')
+        domNode.focus()
+      }
+    } else {
+      domNode.focus()
+    }
+
+    // Dispatch focus events so frameworks (React, Vue) are aware
+    domNode.dispatchEvent(new FocusEvent('focus', { bubbles: true }))
+    domNode.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+
+    // Restore original tabindex if we added one
+    if (!hadTabIndex && domNode.getAttribute('tabindex') === '-1') {
+      domNode.removeAttribute('tabindex')
+    }
 
     const name = el.accessibleName.trim() || el.htmlTag
     return { success: true, message: `✅ Focused [${index}] <${el.htmlTag}> "${name}"` }

@@ -90,6 +90,14 @@ async function startBridge(url: string): Promise<{ success: boolean; room?: stri
 
       // Save room
       saveBridgeConfig({ url: config.url, room })
+
+      // Inject MAIN world scripts into the active tab so network monitoring
+      // and console capture start immediately (not only on next page load).
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(tabs => {
+        for (const tab of tabs) {
+          if (tab.id) injectMainWorldScripts(tab.id)
+        }
+      }).catch(() => {})
     }
 
     if (status === 'disconnected') {

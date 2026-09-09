@@ -459,65 +459,61 @@ export async function executeToolViaBackground(
       const code = params.script as string
       const SCRIPT_TIMEOUT = 30000
 
-      // ═══════════════════════════════════════════════════════════════
-      // Method 1: chrome.debugger + Runtime.evaluate
-      // Bypasses CSP completely — not part of rendering pipeline
-      // Trade-off: shows yellow "debugging" banner
-      // ═══════════════════════════════════════════════════════════════
       try {
-        const debuggee = { tabId: tab.id! }
-        const protocolVersion = '1.3'
+        // Use chrome.scripting.executeScript with MAIN world
+        // This avoids the debugger yellow banner and handles sync blocking code properly
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id! },
+          world: 'MAIN',
+          injectImmediately: true,
+          func: (src: string, timeout: number) => {
+            return new Promise<any>((resolve) => {
+              const channel = '__ariaEval_' + Math.random().toString(36).slice(2)
+              const handler = (e: MessageEvent) => {
+                if (e.data?.channel === channel) {
+                  window.removeEventListener('message', handler)
+                  resolve(e.data)
+                }
+              }
+              window.addEventListener('message', handler)
 
-        // Attach debugger
-        await new Promise<void>((resolve, reject) => {
-          chrome.debugger.attach(debuggee, protocolVersion, () => {
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message))
-            } else {
-              resolve()
-            }
-          })
+              // Timeout — handles infinite loops and hung scripts
+              setTimeout(() => {
+                window.removeEventListener('message', handler)
+                resolve({ success: false, error: `Script execution timed out after ${timeout}ms` })
+              }, timeout)
+
+              // Inject via script element — runs in page JS context, bypasses CSP
+              const scriptEl = document.createElement('script')
+              // Use try/catch + explicit return for expressions
+              scriptEl.textContent = `
+                (async function() {
+                  try {
+                    const __fn = async () => { ${src} };
+                    const __result = await __fn();
+                    window.postMessage({ channel: '${channel}', success: true, result: __result }, '*');
+                  } catch (err) {
+                    window.postMessage({ channel: '${channel}', success: false, error: String(err) }, '*');
+                  }
+                })();
+              `
+              document.documentElement.appendChild(scriptEl)
+              scriptEl.remove()
+            })
+          },
+          args: [code, SCRIPT_TIMEOUT],
         })
 
-        // Wrap code in async IIFE and evaluate
-        const wrappedCode = `(async () => { ${code} })()`
-
-        // Send Runtime.evaluate
-        const result = await new Promise<any>((resolve, reject) => {
-          chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
-            expression: wrappedCode,
-            awaitPromise: true,
-            returnByValue: true,
-            timeout: SCRIPT_TIMEOUT,
-          }, (result) => {
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message))
-            } else {
-              resolve(result)
-            }
-          })
-        })
-
-        // Detach debugger
-        chrome.debugger.detach(debuggee)
-
-        // Parse result
-        if (result?.result?.type === 'undefined') {
-          return ok('undefined')
+        const result = results?.[0]?.result
+        if (result?.success) {
+          const val = result.result
+          if (val === undefined || val === null) return ok(String(val))
+          if (typeof val === 'object') return ok(JSON.stringify(val, null, 2))
+          return ok(String(val))
+        } else {
+          return err(result?.error || 'Script execution failed')
         }
-        if (result?.result?.subtype === 'error') {
-          return err(result.result.description || 'Script error')
-        }
-        if (result?.exceptionDetails) {
-          return err(result.exceptionDetails.text || result.exceptionDetails.exception?.description || 'Exception')
-        }
-        if (result?.result?.value !== undefined) {
-          return ok(JSON.stringify(result.result.value, null, 2))
-        }
-        return ok(JSON.stringify(result?.result, null, 2))
       } catch (e: any) {
-        // Detach on error
-        try { chrome.debugger.detach({ tabId: tab.id! }) } catch {}
         return err(`Script execution failed: ${e.message}`)
       }
     }
