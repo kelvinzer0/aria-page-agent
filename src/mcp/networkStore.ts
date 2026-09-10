@@ -92,6 +92,53 @@ export function clearNetworkEntries(): void {
   entries = []
 }
 
+/** Export entries as HAR 1.2 JSON */
+export function exportAsHAR(options?: { filter?: string; tabId?: number }): string {
+  const filtered = getNetworkEntries({ filter: options?.filter, tabId: options?.tabId, limit: 0 })
+  const harEntries = filtered.map(e => ({
+    startedDateTime: new Date(e.startTime).toISOString(),
+    time: e.duration ?? 0,
+    request: {
+      method: e.method,
+      url: e.url,
+      httpVersion: 'HTTP/1.1',
+      headers: e.requestHeaders ? Object.entries(e.requestHeaders).map(([name, value]) => ({ name, value })) : [],
+      queryString: [],
+      headersSize: -1,
+      bodySize: e.requestBody?.length ?? 0,
+      postData: e.requestBody ? { mimeType: e.requestHeaders?.['content-type'] || 'application/octet-stream', text: e.requestBody } : undefined,
+    },
+    response: {
+      status: e.status ?? 0,
+      statusText: e.statusText ?? '',
+      httpVersion: 'HTTP/1.1',
+      headers: e.responseHeaders ? Object.entries(e.responseHeaders).map(([name, value]) => ({ name, value })) : [],
+      content: {
+        size: e.size ?? 0,
+        mimeType: e.responseHeaders?.['content-type'] || 'application/octet-stream',
+        text: e.responseBody ?? '',
+      },
+      headersSize: -1,
+      bodySize: e.size ?? 0,
+    },
+    cache: {},
+    timings: {
+      send: 0,
+      wait: e.duration ?? 0,
+      receive: 0,
+    },
+  }))
+
+  const har = {
+    log: {
+      version: '1.2',
+      creator: { name: 'aria-page-agent', version: '1.0.0' },
+      entries: harEntries,
+    },
+  }
+  return JSON.stringify(har, null, 2)
+}
+
 /** Map PerformanceResourceTiming initiatorType → NetworkResourceType */
 export function mapInitiatorType(initiatorType: string, url: string): NetworkResourceType {
   switch (initiatorType) {

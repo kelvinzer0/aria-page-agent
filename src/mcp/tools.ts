@@ -14,8 +14,8 @@ import {
   closeTab,
   reloadTab,
 } from '../agent/tabs'
-import { getStoredConsoleLogs } from './consoleStore'
-import { getNetworkEntries, getNetworkEntryById, clearNetworkEntries } from './networkStore'
+import { getStoredConsoleLogs, clearStoredConsoleLogs } from './consoleStore'
+import { getNetworkEntries, getNetworkEntryById, clearNetworkEntries, exportAsHAR } from './networkStore'
 import { isUrlInScope } from './scopeMatcher'
 
 // ─── Tool Definitions ───
@@ -212,6 +212,11 @@ export function getToolDefinitions(): ToolDefinition[] {
       },
     },
     {
+      name: 'clear_console_logs',
+      description: 'Clear all captured console logs',
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
       name: 'execute_script',
       description: 'Execute JavaScript in the page context',
       inputSchema: {
@@ -261,6 +266,20 @@ export function getToolDefinitions(): ToolDefinition[] {
           }
         },
         required: ['action'],
+      },
+    },
+    {
+      name: 'export_har',
+      description: 'Export captured network requests as HAR 1.2 JSON (for import into browser DevTools, Postman, etc.)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          filter: {
+            type: 'string',
+            enum: ['all', 'fetch', 'xhr', 'fetch/xhr', 'document', 'css', 'js', 'font', 'img', 'media', 'manifest', 'websocket', 'wasm', 'other'],
+            description: 'Filter by resource type (default: all)',
+          },
+        },
       },
     },
   ]
@@ -456,12 +475,19 @@ export async function executeToolViaBackground(
     // ─── Debug Tools ──────────────────────────────────────────
 
     case 'get_console_logs': {
+      const tab = await getTab()
       const logs = getStoredConsoleLogs({
         limit: (params.limit as number) || 20,
         type: params.level as string,
+        tabId: tab.id,
       })
-      if (!logs.length) return ok('No console logs captured yet. Logs are captured automatically after the next page load.')
+      if (!logs.length) return ok('No console logs captured yet for this tab. Logs are captured automatically after the next page load.')
       return ok(logs.map(l => `[${l.type.toUpperCase()}] ${l.args?.join(' ')}`).join('\n'))
+    }
+
+    case 'clear_console_logs': {
+      clearStoredConsoleLogs()
+      return ok('✅ Console logs cleared.')
     }
 
     case 'execute_script': {
@@ -620,12 +646,14 @@ export async function executeToolViaBackground(
       }
 
       // action === 'list'
+      const tab = await getTab()
       const entries = getNetworkEntries({
         filter: params.filter as string,
         limit: (params.limit as number) || 30,
+        tabId: tab.id,
       })
       if (!entries.length) {
-        return ok('No network requests captured yet.\nNetwork monitoring starts automatically on next page load after bridge connects.\nTip: reload the page or navigate somewhere to start capturing.')
+        return ok('No network requests captured yet for this tab.\nNetwork monitoring starts automatically on next page load after bridge connects.\nTip: reload the page or navigate somewhere to start capturing.')
       }
 
       const storageResult = await chrome.storage.local.get(['scopeConfig'])
@@ -640,11 +668,20 @@ export async function executeToolViaBackground(
         const shortUrl = e.url.length > 80 ? e.url.substring(0, 77) + '...' : e.url
         return `${icon} [${e.id.substring(0, 8)}] ${scopeLabel} ${e.method} ${status} ${dur} ${size} [${e.type}] ${shortUrl}`
       })
-      const total = getNetworkEntries({ filter: params.filter as string }).length
+      const total = getNetworkEntries({ filter: params.filter as string, tabId: tab.id }).length
       lines.unshift(`Network Requests (${entries.length}/${total} shown | filter: ${params.filter || 'all'})`)
       lines.unshift('ID       Scope      Method Status  Dur    Size   Type       URL')
       lines.unshift('─'.repeat(100))
       return ok(lines.join('\n'))
+    }
+
+    case 'export_har': {
+      const tab = await getTab()
+      const har = exportAsHAR({
+        filter: params.filter as string,
+        tabId: tab.id,
+      })
+      return ok(har)
     }
 
     default:

@@ -343,7 +343,13 @@ export default defineBackground(() => {
 
     // ─── Console entry from content script → shared store ───
     if (message.type === 'CONSOLE_ENTRY') {
-      pushConsoleLog(message.entry)
+      const entry = message.entry
+      // Attach tabId so get_console_logs can filter by tab
+      if (!entry.tabId && sender.tab?.id) {
+        entry.tabId = sender.tab.id
+        entry.tabUrl = sender.tab.url
+      }
+      pushConsoleLog(entry)
       return false
     }
 
@@ -353,6 +359,11 @@ export default defineBackground(() => {
       // Map initiatorType for performance entries (non-fetch/xhr)
       if (!entry.type && entry.initiatorType) {
         entry.type = mapInitiatorType(entry.initiatorType, entry.url || '')
+      }
+      // Attach tabId so network_monitor can filter by tab
+      if (!entry.tabId && sender.tab?.id) {
+        entry.tabId = sender.tab.id
+        entry.tabUrl = sender.tab.url
       }
       pushNetworkEntry(entry)
       return false

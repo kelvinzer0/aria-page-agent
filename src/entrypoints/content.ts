@@ -173,56 +173,48 @@ export default defineContentScript({
 
         case 'click_element': {
           const [index] = payload
-          ensureIndexMap()
-          clickElement(index).then(sendResponse)
+          ensureIndexMap().then(() => clickElement(index)).then(sendResponse)
           return true
         }
 
         case 'input_text': {
           const [index, text] = payload
-          ensureIndexMap()
-          inputText(index, text).then(sendResponse)
+          ensureIndexMap().then(() => inputText(index, text)).then(sendResponse)
           return true
         }
 
         case 'select_option': {
           const [index, optionText] = payload
-          ensureIndexMap()
-          selectOption(index, optionText).then(sendResponse)
+          ensureIndexMap().then(() => selectOption(index, optionText)).then(sendResponse)
           return true
         }
 
         case 'scroll': {
-          ensureIndexMap()
-          scroll(payload).then(sendResponse)
+          ensureIndexMap().then(() => scroll(payload)).then(sendResponse)
           return true
         }
 
         case 'press_key': {
           const [index, key] = payload
-          ensureIndexMap()
-          pressKey(index, key).then(sendResponse)
+          ensureIndexMap().then(() => pressKey(index, key)).then(sendResponse)
           return true
         }
 
         case 'hover': {
           const [index] = payload
-          ensureIndexMap()
-          hoverElement(index).then(sendResponse)
+          ensureIndexMap().then(() => hoverElement(index)).then(sendResponse)
           return true
         }
 
         case 'focus': {
           const [index] = payload
-          ensureIndexMap()
-          focusElement(index).then(sendResponse)
+          ensureIndexMap().then(() => focusElement(index)).then(sendResponse)
           return true
         }
 
         case 'toggle_check': {
           const [index, value] = payload
-          ensureIndexMap()
-          toggleCheck(index, value).then(sendResponse)
+          ensureIndexMap().then(() => toggleCheck(index, value)).then(sendResponse)
           return true
         }
 
@@ -239,8 +231,8 @@ export default defineContentScript({
   },
 })
 
-function ensureIndexMap() {
+async function ensureIndexMap() {
   if (!currentRoot) {
-    refreshAom()
+    await refreshAom()
   }
 }

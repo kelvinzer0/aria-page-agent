@@ -9,6 +9,8 @@ export interface ConsoleLogEntry {
   args: string[]
   timestamp: number
   source?: string
+  tabId?: number
+  tabUrl?: string
 }
 
 const MAX_LOGS = 500
@@ -22,8 +24,10 @@ export function pushConsoleLog(entry: ConsoleLogEntry): void {
 export function getStoredConsoleLogs(options?: {
   limit?: number
   type?: string
+  tabId?: number
 }): ConsoleLogEntry[] {
   let result = [...logs]
+  if (options?.tabId) result = result.filter(l => l.tabId === options.tabId)
   if (options?.type) result = result.filter(l => l.type === options.type)
   if (options?.limit) result = result.slice(-options.limit)
   return result
