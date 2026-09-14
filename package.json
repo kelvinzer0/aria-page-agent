@@ -1,6 +1,6 @@
 {
   "name": "aria-page-agent",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "type": "module",
   "description": "LLM browser agent powered by ARIA Accessibility Object Model - sees the web like a screen reader",

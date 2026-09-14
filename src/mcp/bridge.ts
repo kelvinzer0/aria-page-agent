@@ -12,7 +12,7 @@ export interface BridgeConfig {
 
 export type BridgeStatus = 'disconnected' | 'connecting' | 'connected'
 
-export type BridgeStatusListener = (status: BridgeStatus, room?: string) => void
+export type BridgeStatusListener = (status: BridgeStatus, room?: string, error?: string) => void
 
 export class MCPBridgeClient {
   private ws: WebSocket | null = null
@@ -23,10 +23,15 @@ export class MCPBridgeClient {
   private statusListeners: BridgeStatusListener[] = []
   private toolCallHandler: ((name: string, params: Record<string, unknown>) => Promise<ToolResult>) | null = null
   private room: string = ''
+  private lastError: string = ''
 
   constructor(config: BridgeConfig) {
     this.config = config
     this.room = config.room || ''
+  }
+
+  getLastError(): string {
+    return this.lastError
   }
 
   // ─── Public API ───
@@ -108,6 +113,7 @@ export class MCPBridgeClient {
       this.connectWebSocket(data.extension_url)
     } catch (err: any) {
       console.error('[MCPBridge] Failed to create room:', err)
+      this.lastError = err.message || 'Failed to create room'
       this.setStatus('disconnected')
     }
   }
@@ -118,6 +124,7 @@ export class MCPBridgeClient {
     this.ws = new WebSocket(wsUrl)
 
     this.ws.onopen = () => {
+      this.lastError = ''
       this.setStatus('connected')
       console.log('[MCPBridge] Connected, room:', this.room)
       // Keepalive ping to prevent Chrome SW termination
@@ -140,9 +147,12 @@ export class MCPBridgeClient {
       }
     }
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event) => {
       this.ws = null
       if (this.keepaliveInterval) { clearInterval(this.keepaliveInterval); this.keepaliveInterval = null }
+      if (!this.lastError && event.code !== 1000) {
+        this.lastError = `WebSocket closed (code ${event.code})`
+      }
       this.setStatus('disconnected')
       // Auto-reconnect after 5s, reusing the same room
       this.reconnectTimer = setTimeout(() => {
@@ -152,6 +162,7 @@ export class MCPBridgeClient {
 
     this.ws.onerror = (err) => {
       console.error('[MCPBridge] WS error:', err)
+      this.lastError = 'WebSocket connection error'
     }
   }
 
@@ -218,7 +229,11 @@ export class MCPBridgeClient {
   private setStatus(status: BridgeStatus): void {
     this.status = status
     for (const listener of this.statusListeners) {
-      listener(status, this.room)
+      try {
+        listener(status, this.room, this.lastError)
+      } catch (err) {
+        console.error('[MCPBridge] Error in status listener:', err)
+      }
     }
   }
 

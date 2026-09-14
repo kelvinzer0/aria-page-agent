@@ -22,9 +22,9 @@ export function BridgePanel() {
   useEffect(() => {
     chrome.storage.local.get(['bridgeUrl', 'scopeConfig'], (result) => {
       let url = result.bridgeUrl
-      if (!url || url.includes('insidexofficial.workers.dev')) {
+      if (!url || url.includes('insidexofficial.workers.dev') || url.includes('public-llm-bridge')) {
         url = DEFAULT_BRIDGE_URL
-        chrome.storage.local.set({ bridgeUrl: url })
+        chrome.storage.local.set({ bridgeUrl: url, bridgeRoom: '' })
       }
       setBridgeUrl(url)
       if (result.scopeConfig) setScopeConfig(result.scopeConfig)

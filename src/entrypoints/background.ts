@@ -47,13 +47,15 @@ const DEFAULT_BRIDGE_URL = 'https://public-mcp-bridge.warunglakku.com'
 async function loadBridgeConfig(): Promise<BridgeConfig> {
   const result = await chrome.storage.local.get(['bridgeUrl', 'bridgeRoom'])
   let url = result.bridgeUrl || DEFAULT_BRIDGE_URL
-  if (url.includes('insidexofficial.workers.dev')) {
+  let room = result.bridgeRoom || ''
+  if (url.includes('insidexofficial.workers.dev') || url.includes('public-llm-bridge')) {
     url = DEFAULT_BRIDGE_URL
-    await chrome.storage.local.set({ bridgeUrl: url })
+    room = ''
+    await chrome.storage.local.set({ bridgeUrl: url, bridgeRoom: '' })
   }
   return {
     url,
-    room: result.bridgeRoom || '',
+    room,
   }
 }
 
@@ -66,8 +68,9 @@ async function saveBridgeConfig(config: BridgeConfig): Promise<void> {
 
 // ─── Start Bridge ───
 async function startBridge(url: string): Promise<{ success: boolean; room?: string; mcpUrl?: string; error?: string }> {
-  if (bridge?.isConnected()) {
+  if (bridge) {
     bridge.disconnect()
+    bridge = null
   }
 
   // Load saved room to persist it across restarts
@@ -113,17 +116,30 @@ async function startBridge(url: string): Promise<{ success: boolean; room?: stri
   })
 
   return new Promise((resolve) => {
+    let settled = false
     const timeout = setTimeout(() => {
-      resolve({ success: false, error: 'Connection timeout' })
+      if (!settled) {
+        settled = true
+        resolve({ success: false, error: bridge?.getLastError() || 'Connection timeout' })
+      }
     }, 10000)
 
-    bridge!.onStatusChange((status, room) => {
+    bridge!.onStatusChange((status, room, error) => {
+      if (settled) return
       if (status === 'connected') {
+        settled = true
         clearTimeout(timeout)
         resolve({
           success: true,
           room,
           mcpUrl: bridge?.getMcpUrl(),
+        })
+      } else if (status === 'disconnected' && error) {
+        settled = true
+        clearTimeout(timeout)
+        resolve({
+          success: false,
+          error: error,
         })
       }
     })
