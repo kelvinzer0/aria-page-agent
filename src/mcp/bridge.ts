@@ -91,12 +91,22 @@ export class MCPBridgeClient {
   private async createRoom(): Promise<void> {
     try {
       const baseUrl = this.config.url.replace(/\/+$/, '')
-      const res = await fetch(`${baseUrl}/mcp/new`)
+      let res = await fetch(`${baseUrl}/mcp/new`)
+      if (!res.ok) {
+        res = await fetch(`${baseUrl}/new`)
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+      }
       const data = await res.json()
+      if (!data.room || !data.extension_url) {
+        throw new Error(`Invalid response from bridge: missing room or extension_url`)
+      }
 
       this.room = data.room
       this.connectWebSocket(data.extension_url)
-    } catch (err) {
+    } catch (err: any) {
       console.error('[MCPBridge] Failed to create room:', err)
       this.setStatus('disconnected')
     }
