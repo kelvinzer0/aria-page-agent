@@ -42,10 +42,17 @@ import { pushNetworkEntry, mapInitiatorType } from '../mcp/networkStore'
 let bridge: MCPBridgeClient | null = null
 
 // ─── Load saved config ───
+const DEFAULT_BRIDGE_URL = 'https://public-mcp-bridge.warunglakku.com'
+
 async function loadBridgeConfig(): Promise<BridgeConfig> {
   const result = await chrome.storage.local.get(['bridgeUrl', 'bridgeRoom'])
+  let url = result.bridgeUrl || DEFAULT_BRIDGE_URL
+  if (url.includes('insidexofficial.workers.dev')) {
+    url = DEFAULT_BRIDGE_URL
+    await chrome.storage.local.set({ bridgeUrl: url })
+  }
   return {
-    url: result.bridgeUrl || '',
+    url,
     room: result.bridgeRoom || '',
   }
 }

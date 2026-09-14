@@ -10,7 +10,8 @@ interface BridgeState {
 }
 
 export function BridgePanel() {
-  const [bridgeUrl, setBridgeUrl] = useState('https://mcp-bridge.insidexofficial.workers.dev')
+  const DEFAULT_BRIDGE_URL = 'https://public-mcp-bridge.warunglakku.com'
+  const [bridgeUrl, setBridgeUrl] = useState(DEFAULT_BRIDGE_URL)
   const [scopeConfig, setScopeConfig] = useState('')
   const [state, setState] = useState<BridgeState>({ connected: false })
   const [loading, setLoading] = useState(false)
@@ -20,7 +21,12 @@ export function BridgePanel() {
   // Load bridgeUrl & scopeConfig from chrome.storage on mount
   useEffect(() => {
     chrome.storage.local.get(['bridgeUrl', 'scopeConfig'], (result) => {
-      if (result.bridgeUrl) setBridgeUrl(result.bridgeUrl)
+      let url = result.bridgeUrl
+      if (!url || url.includes('insidexofficial.workers.dev')) {
+        url = DEFAULT_BRIDGE_URL
+        chrome.storage.local.set({ bridgeUrl: url })
+      }
+      setBridgeUrl(url)
       if (result.scopeConfig) setScopeConfig(result.scopeConfig)
     })
   }, [])
@@ -98,7 +104,7 @@ export function BridgePanel() {
       </h3>
 
       <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 16 }}>
-        Connect this extension to a Cloudflare Workers bridge. AI agents can then
+        Connect this extension to an MCP bridge. AI agents can then
         control this browser via MCP protocol.
       </p>
 
@@ -111,7 +117,7 @@ export function BridgePanel() {
           type="text"
           value={bridgeUrl}
           onChange={e => setBridgeUrl(e.target.value)}
-          placeholder="https://mcp-bridge.<subdomain>.workers.dev"
+          placeholder="https://public-mcp-bridge.warunglakku.com"
           disabled={state.connected}
           style={{
             width: '100%',
