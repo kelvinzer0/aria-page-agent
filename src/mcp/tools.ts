@@ -17,6 +17,8 @@ import {
 import { getStoredConsoleLogs, clearStoredConsoleLogs } from './consoleStore'
 import { getNetworkEntries, getNetworkEntryById, clearNetworkEntries, exportAsHAR } from './networkStore'
 import { isUrlInScope } from './scopeMatcher'
+import { fetchUrl } from './fetchUrl'
+import { searchWeb } from './webSearch'
 
 // ─── Tool Definitions ───
 
@@ -280,6 +282,35 @@ export function getToolDefinitions(): ToolDefinition[] {
             description: 'Filter by resource type (default: all)',
           },
         },
+      },
+    },
+
+    // ─── Web Fetching & Search Tools ───────────────────────────
+    {
+      name: 'fetch_url',
+      description: 'Fetch and parse content from a public web URL. Automatically cleans HTML into clean Markdown/text, removes scripts/styles/ads, truncates at max length, and enforces strict SSRF protection against internal networks (loopback, private LAN, cloud metadata 169.254.169.254). Supports auto-pagination via chunk_index for reading arbitrarily large pages.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'Public HTTP or HTTPS URL to fetch' },
+          chunk_index: { type: 'number', description: 'Which chunk of page content to return (0-indexed, default: 0). Use to continue reading large pages.' },
+          chunk_size: { type: 'number', description: 'Size of each chunk in characters (default: 8000, max: 20000)' },
+          max_content_length: { type: 'number', description: 'Maximum total characters to extract from the page (default: 50000)' },
+          raw_html: { type: 'boolean', description: 'Set true to return raw HTML instead of clean Markdown (default: false)' },
+        },
+        required: ['url'],
+      },
+    },
+    {
+      name: 'search_web',
+      description: 'Search the live web (via Google Search) for up-to-date information, news, documentation, or answers. Returns a list of results with title, link, and snippet.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The search keywords or query' },
+          count: { type: 'number', description: 'Number of search results to return (default: 10, max: 25)' },
+        },
+        required: ['query'],
       },
     },
   ]
@@ -682,6 +713,35 @@ export async function executeToolViaBackground(
         tabId: tab.id,
       })
       return ok(har)
+    }
+
+    // ─── Web Fetching & Search Tools ───────────────────────────
+
+    case 'fetch_url': {
+      const url = params.url as string
+      if (!url) return err('url parameter is required')
+      const res = await fetchUrl({
+        url,
+        chunk_index: params.chunk_index as number,
+        chunk_size: params.chunk_size as number,
+        max_content_length: params.max_content_length as number,
+        raw_html: params.raw_html as boolean,
+      })
+      if (res.isError) {
+        return err(res.text)
+      }
+      return ok(res.text)
+    }
+
+    case 'search_web': {
+      const query = params.query as string
+      if (!query) return err('query parameter is required')
+      const count = typeof params.count === 'number' ? params.count : 10
+      const results = await searchWeb(query, count)
+      if (!results.length) {
+        return ok(`No search results found for query: "${query}"`)
+      }
+      return ok(JSON.stringify(results, null, 2))
     }
 
     default:
