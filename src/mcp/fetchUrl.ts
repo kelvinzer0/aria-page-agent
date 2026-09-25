@@ -1,9 +1,17 @@
 /**
- * URL Fetching Module with SSRF Protection, Clean Markdown, and Auto-Pagination
+ * URL Fetching Module with SSRF Protection, MIME Type Handling, Clean Markdown, and Auto-Pagination
  *
- * Safely fetches public web pages, converts them into readable Markdown,
- * validates against SSRF on both initial and redirected URLs, and provides
- * chunked pagination for handling arbitrarily large content over the MCP bridge.
+ * Safely fetches web resources and adapts its processing based on the response MIME type:
+ * - HTML: Converted to clean, structured Markdown (stripping scripts, styles, nav, footer, etc.)
+ * - JSON: Pretty-printed inside a json code block
+ * - Plain Text & Markdown: Preserved verbatim without HTML tag stripping
+ * - CSV & TSV: Converted to clean Markdown tables
+ * - XML & RSS/Atom: Formatted inside an xml code block
+ * - Images: Returns image metadata and markdown image reference
+ * - PDF & Binary: Returns clean file metadata without corrupting LLM context with binary bytes
+ *
+ * Validates against SSRF on initial URLs and redirect targets.
+ * Supports auto-pagination via chunk_index for handling arbitrarily large pages over the MCP bridge.
  */
 
 import { validateUrlSSRF } from './ssrf'
@@ -20,6 +28,7 @@ export interface FetchUrlParams {
 export interface FetchUrlResult {
   text: string
   title?: string
+  contentType?: string
   totalLength: number
   totalChunks: number
   currentChunk: number
@@ -31,8 +40,56 @@ const DEFAULT_CHUNK_SIZE = 8000
 const DEFAULT_MAX_CONTENT_LENGTH = 50000
 const MAX_REDIRECTS = 5
 
+function formatBytes(bytes: number): string {
+  if (isNaN(bytes) || bytes <= 0) return 'unknown size'
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
 /**
- * Fetches a public web page safely and returns paginated markdown content.
+ * Converts CSV/TSV text into a Markdown table.
+ */
+function formatCsvToMarkdown(csvText: string, delimiter = ','): string {
+  const lines = csvText.split(/\r?\n/).filter(line => line.trim().length > 0)
+  if (lines.length === 0) return ''
+
+  const rows = lines.slice(0, 100).map(line => {
+    const cells: string[] = []
+    let curr = ''
+    let inQuotes = false
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i]
+      if (char === '"') {
+        inQuotes = !inQuotes
+      } else if (char === delimiter && !inQuotes) {
+        cells.push(curr.trim())
+        curr = ''
+      } else {
+        curr += char
+      }
+    }
+    cells.push(curr.trim())
+    return cells
+  })
+
+  if (rows.length === 0) return csvText
+  const colCount = rows[0].length
+  let md = '| ' + rows[0].map(c => c.replace(/\|/g, '\\|')).join(' | ') + ' |\n'
+  md += '| ' + Array(colCount).fill('---').join(' | ') + ' |\n'
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i]
+    while (row.length < colCount) row.push('')
+    md += '| ' + row.slice(0, colCount).map(c => c.replace(/\|/g, '\\|')).join(' | ') + ' |\n'
+  }
+  if (lines.length > 100) {
+    md += `\n*... [Showing first 100 of ${lines.length.toLocaleString()} rows]*\n`
+  }
+  return md
+}
+
+/**
+ * Fetches a public web resource safely and returns formatted, paginated content based on MIME type.
  */
 export async function fetchUrl(params: FetchUrlParams): Promise<FetchUrlResult> {
   const rawUrl = (params.url || '').trim()
@@ -70,7 +127,7 @@ export async function fetchUrl(params: FetchUrlParams): Promise<FetchUrlResult> 
       const res = await fetch(currentUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
+          'Accept': 'text/html,application/xhtml+xml,application/json,text/plain,text/markdown;q=0.9,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9',
         },
         redirect: 'manual',
@@ -131,7 +188,81 @@ export async function fetchUrl(params: FetchUrlParams): Promise<FetchUrlResult> 
     }
   }
 
-  // 3. Read Body & convert
+  // 3. Inspect Content-Type MIME type
+  const rawContentType = response.headers.get('content-type') || 'text/html'
+  const mimeType = rawContentType.split(';')[0].trim().toLowerCase()
+  const rawContentLength = parseInt(response.headers.get('content-length') || '0', 10)
+
+  // 4. Handle Binary / Non-Text MIME types early
+  if (mimeType.startsWith('image/') && mimeType !== 'image/svg+xml') {
+    const text = [
+      `🖼️ **Image Resource**: ${currentUrl}`,
+      `📦 **MIME Type**: ${mimeType}`,
+      `📏 **Size**: ${formatBytes(rawContentLength)}`,
+      '',
+      `![Image](${currentUrl})`,
+    ].join('\n')
+
+    return {
+      text,
+      title: `Image: ${currentUrl}`,
+      contentType: mimeType,
+      totalLength: text.length,
+      totalChunks: 1,
+      currentChunk: 0,
+      hasMore: false,
+    }
+  }
+
+  if (mimeType === 'application/pdf') {
+    const text = [
+      `📄 **PDF Document**: ${currentUrl}`,
+      `📦 **MIME Type**: application/pdf`,
+      `📏 **Size**: ${formatBytes(rawContentLength)}`,
+      '',
+      `*(This is a binary PDF document. You can open it in the browser or use an AOM/page snapshot to inspect it if loaded in a tab.)*`,
+    ].join('\n')
+
+    return {
+      text,
+      title: `PDF: ${currentUrl}`,
+      contentType: mimeType,
+      totalLength: text.length,
+      totalChunks: 1,
+      currentChunk: 0,
+      hasMore: false,
+    }
+  }
+
+  if (
+    mimeType.startsWith('audio/') ||
+    mimeType.startsWith('video/') ||
+    mimeType === 'application/zip' ||
+    mimeType === 'application/gzip' ||
+    mimeType === 'application/x-tar' ||
+    mimeType === 'application/octet-stream' ||
+    mimeType === 'application/wasm'
+  ) {
+    const text = [
+      `📦 **Binary File**: ${currentUrl}`,
+      `📦 **MIME Type**: ${mimeType}`,
+      `📏 **Size**: ${formatBytes(rawContentLength)}`,
+      '',
+      `*(Binary resource cannot be displayed as text.)*`,
+    ].join('\n')
+
+    return {
+      text,
+      title: `Binary: ${currentUrl}`,
+      contentType: mimeType,
+      totalLength: text.length,
+      totalChunks: 1,
+      currentChunk: 0,
+      hasMore: false,
+    }
+  }
+
+  // 5. Read Text Content
   let bodyText = ''
   try {
     bodyText = await response.text()
@@ -146,7 +277,7 @@ export async function fetchUrl(params: FetchUrlParams): Promise<FetchUrlResult> 
     }
   }
 
-  // 4. Format Conversion (HTML to Markdown vs Raw)
+  // 6. Format Content Based on Text MIME Type
   let content = ''
   let title = ''
   let description = ''
@@ -154,14 +285,37 @@ export async function fetchUrl(params: FetchUrlParams): Promise<FetchUrlResult> 
   if (params.raw_html) {
     content = bodyText
     title = currentUrl
+  } else if (mimeType === 'application/json' || mimeType === 'text/json' || mimeType.endsWith('+json')) {
+    // JSON Content
+    try {
+      const parsed = JSON.parse(bodyText)
+      content = '```json\n' + JSON.stringify(parsed, null, 2) + '\n```'
+    } catch {
+      content = '```json\n' + bodyText.trim() + '\n```'
+    }
+    title = `JSON: ${currentUrl}`
+  } else if (mimeType === 'text/plain' || mimeType === 'text/markdown' || mimeType === 'text/x-markdown') {
+    // Raw Plain Text / Markdown: preserve formatting without HTML tag stripping
+    content = bodyText.trim()
+    title = `Text: ${currentUrl}`
+  } else if (mimeType === 'text/csv' || mimeType === 'text/tab-separated-values') {
+    // Tabular CSV / TSV
+    const delimiter = mimeType === 'text/tab-separated-values' ? '\t' : ','
+    content = formatCsvToMarkdown(bodyText, delimiter)
+    title = `Table: ${currentUrl}`
+  } else if (mimeType === 'application/xml' || mimeType === 'text/xml' || mimeType.endsWith('+xml')) {
+    // XML / RSS / Atom
+    content = '```xml\n' + bodyText.trim() + '\n```'
+    title = `XML: ${currentUrl}`
   } else {
+    // Default HTML / XHTML
     const parsed = htmlToCleanMarkdown(bodyText, currentUrl)
     content = parsed.markdown
     title = parsed.title || currentUrl
     description = parsed.description || ''
   }
 
-  // 5. Apply max_content_length limit
+  // 7. Apply max_content_length limit
   const maxLen = params.max_content_length && params.max_content_length > 0
     ? params.max_content_length
     : DEFAULT_MAX_CONTENT_LENGTH
@@ -170,7 +324,7 @@ export async function fetchUrl(params: FetchUrlParams): Promise<FetchUrlResult> 
     content = content.substring(0, maxLen) + '\n\n... [Content truncated at max_content_length limit]'
   }
 
-  // 6. Pagination & Chunking
+  // 8. Pagination & Chunking
   const chunkSize = params.chunk_size && params.chunk_size > 500
     ? params.chunk_size
     : DEFAULT_CHUNK_SIZE
@@ -194,10 +348,11 @@ export async function fetchUrl(params: FetchUrlParams): Promise<FetchUrlResult> 
   const chunkSlice = content.substring(start, end)
   const hasMore = end < totalLength
 
-  // 7. Format Response with rich pagination headers
+  // 9. Format Response with rich pagination headers
   const lines: string[] = []
   lines.push(`📄 **Title**: ${title}`)
   lines.push(`🔗 **URL**: ${currentUrl}`)
+  lines.push(`📦 **Content-Type**: ${mimeType}`)
   if (description) {
     lines.push(`📝 **Summary**: ${description}`)
   }
@@ -228,6 +383,7 @@ export async function fetchUrl(params: FetchUrlParams): Promise<FetchUrlResult> 
   return {
     text: lines.join('\n'),
     title,
+    contentType: mimeType,
     totalLength,
     totalChunks,
     currentChunk: chunkIndex,
